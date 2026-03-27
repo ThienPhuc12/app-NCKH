@@ -10,6 +10,9 @@ function App() {
 
   const renderHome = () => (
     <main className="home-shell">
+      <div className="logo-container">
+        <img src={process.env.PUBLIC_URL + '/logo.png'} alt="NHOM5 Logo" className="app-logo" />
+      </div>
       <h1>He thong Canh bao Lu DUT</h1>
       <p>Chon chuc nang de van hanh he thong LoRa Mesh.</p>
 
