@@ -1,0 +1,278 @@
+.connect-button-container {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  max-width: 500px;
+}
+
+/* Error Alert */
+.error-alert {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 16px;
+  background-color: #fee2e2;
+  border: 2px solid #dc2626;
+  border-radius: 8px;
+  animation: slideIn 0.3s ease-out;
+}
+
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.error-icon {
+  font-size: 20px;
+  flex-shrink: 0;
+}
+
+.error-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.error-message {
+  margin: 0;
+  color: #7f1d1d;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.retry-button {
+  align-self: flex-start;
+  padding: 6px 12px;
+  background-color: #dc2626;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  transition: all 0.2s;
+}
+
+.retry-button:hover {
+  background-color: #b91c1c;
+  transform: translateY(-1px);
+}
+
+.retry-button:active {
+  transform: translateY(0);
+}
+
+.close-alert {
+  background: none;
+  border: none;
+  color: #dc2626;
+  font-size: 18px;
+  cursor: pointer;
+  padding: 0;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: color 0.2s;
+}
+
+.close-alert:hover {
+  color: #7f1d1d;
+}
+
+/* Status Display */
+.status-display {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  border-radius: 8px;
+  font-weight: 600;
+  font-size: 14px;
+  transition: all 0.3s;
+}
+
+.status-display.scanning {
+  background-color: #fef3c7;
+  border: 2px solid #fbbf24;
+  color: #92400e;
+}
+
+.status-display.connecting {
+  background-color: #dbeafe;
+  border: 2px solid #3b82f6;
+  color: #1e40af;
+}
+
+.status-display.connected {
+  background-color: #dcfce7;
+  border: 2px solid #22c55e;
+  color: #166534;
+}
+
+.status-display.disconnected {
+  background-color: #fef08a;
+  border: 2px solid #eab308;
+  color: #78350f;
+}
+
+.status-display.error {
+  background-color: #fee2e2;
+  border: 2px solid #dc2626;
+  color: #7f1d1d;
+}
+
+/* Status Spinner Animation */
+.status-spinner {
+  display: inline-block;
+  font-size: 16px;
+  animation: spin 2s linear infinite;
+}
+
+@keyframes spin {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+/* Status Icon (no animation) */
+.status-icon {
+  display: inline-block;
+  font-size: 16px;
+  font-weight: bold;
+}
+
+.status-text {
+  flex: 1;
+}
+
+/* Port Selector */
+.port-selector {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.port-dropdown {
+  flex: 1;
+  padding: 8px 12px;
+  border: 2px solid rgba(148, 163, 184, 0.4);
+  border-radius: 6px;
+  background-color: rgba(15, 23, 42, 0.85);
+  color: #fff;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.port-dropdown:hover {
+  border-color: rgba(59, 130, 246, 0.7);
+}
+
+.port-dropdown:focus {
+  outline: none;
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+.port-dropdown option {
+  background-color: #0b1120;
+  color: #fff;
+}
+
+.connect-button {
+  padding: 8px 16px;
+  background-color: #3b82f6;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  transition: all 0.2s;
+}
+
+.connect-button:hover:not(:disabled) {
+  background-color: #2563eb;
+  transform: translateY(-1px);
+}
+
+.connect-button:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.connect-button:disabled {
+  background-color: #6b7280;
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+/* No Ports Available Message */
+.no-ports-message {
+  padding: 16px;
+  background-color: #fef3c7;
+  border: 2px solid #f59e0b;
+  border-radius: 8px;
+  color: #92400e;
+  font-size: 13px;
+}
+
+.no-ports-message p {
+  margin: 0 0 10px 0;
+  font-weight: 600;
+}
+
+.no-ports-message ul {
+  margin: 0;
+  padding-left: 20px;
+  list-style: none;
+}
+
+.no-ports-message li {
+  margin: 6px 0;
+  line-height: 1.4;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .connect-button-container {
+    max-width: 100%;
+  }
+
+  .error-alert {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .close-alert {
+    align-self: flex-end;
+    margin-top: -30px;
+  }
+
+  .retry-button {
+    width: 100%;
+    text-align: center;
+  }
+
+  .port-selector {
+    flex-direction: column;
+  }
+
+  .connect-button {
+    width: 100%;
+  }
+}

@@ -1,0 +1,87 @@
+.App {
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at 15% 10%, rgba(56, 189, 248, 0.2), transparent 35%),
+    radial-gradient(circle at 85% 90%, rgba(22, 163, 74, 0.2), transparent 30%),
+    linear-gradient(135deg, #0b1120, #1e293b 55%, #0f172a);
+  color: #ffffff;
+  padding: 12px;
+}
+
+.home-shell {
+  width: min(1100px, 96vw);
+  margin: 28px auto;
+  padding: 28px;
+  border-radius: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(2, 6, 23, 0.68);
+}
+
+.home-shell h1 {
+  margin: 0;
+  font-size: clamp(26px, 3vw, 40px);
+}
+
+.home-shell p {
+  margin-top: 10px;
+  margin-bottom: 22px;
+  color: #cbd5e1;
+}
+
+.connection-status {
+  margin-bottom: 24px;
+  display: flex;
+  justify-content: center;
+}
+
+.choice-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(220px, 1fr));
+  gap: 14px;
+}
+
+.choice-card {
+  text-align: left;
+  padding: 20px;
+  border-radius: 14px;
+  border: 1px solid rgba(148, 163, 184, 0.4);
+  background: rgba(15, 23, 42, 0.85);
+  color: #fff;
+  cursor: pointer;
+}
+
+.choice-card h2 {
+  margin: 0 0 6px;
+}
+
+.choice-card span {
+  color: #cbd5e1;
+}
+
+.choice-card:hover {
+  border-color: rgba(59, 130, 246, 0.7);
+  transform: translateY(-2px);
+}
+
+.view-header {
+  width: min(1200px, 96vw);
+  margin: 10px auto 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.back-btn {
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  background: rgba(15, 23, 42, 0.85);
+  color: #fff;
+  border-radius: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+
+@media (max-width: 760px) {
+  .choice-grid {
+    grid-template-columns: 1fr;
+  }
+}
