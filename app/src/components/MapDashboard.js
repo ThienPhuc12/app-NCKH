@@ -121,6 +121,22 @@ function extractIncomingNodes(message) {
   return null;
 }
 
+function isIncomingMeshMessage(message) {
+  return message?.type === 'mesh:receive';
+}
+
+function isGatewayAck(message) {
+  return message?.type === 'command:ack' || (message?.type === 'ack' && message?.ackSource === 'gateway');
+}
+
+function isMeshAck(message) {
+  return message?.type === 'mesh:ack';
+}
+
+function isCommandDelivery(message) {
+  return message?.type === 'command:delivery';
+}
+
 function formatLastUpdated(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) {
@@ -131,15 +147,22 @@ function formatLastUpdated(value) {
 
 function MapDashboard({ gatewayUrl }) {
   const [nodes, setNodes] = useState([]);
+  const [selectedNodeId, setSelectedNodeId] = useState('');
   const [socketState, setSocketState] = useState('Dang ket noi gateway...');
   const socketRef = useRef(null);
+  const mapRef = useRef(null);
   const knownNodeIdsRef = useRef(new Set());
   const lowBatteryNotifiedRef = useRef(new Set());
   const useOfflineTiles = useMemo(() => process.env.REACT_APP_USE_OFFLINE_TILES === 'true', []);
   const activeNodes = useMemo(() => nodes.filter((node) => node.status === 'online'), [nodes]);
+  const offlineNodes = useMemo(() => nodes.filter((node) => node.status !== 'online'), [nodes]);
   const mapNodes = useMemo(
     () => nodes.filter((node) => Number.isFinite(node.lat) && Number.isFinite(node.lng)),
     [nodes]
+  );
+  const selectedNode = useMemo(
+    () => nodes.find((node) => node.id === selectedNodeId) || activeNodes[0] || nodes[0] || null,
+    [nodes, activeNodes, selectedNodeId]
   );
 
   const tileUrl = useMemo(() => {
@@ -171,6 +194,47 @@ function MapDashboard({ gatewayUrl }) {
       try {
         const parsed = JSON.parse(event.data);
         console.log('[Frontend] Received message:', parsed);
+
+        if (isGatewayAck(parsed)) {
+          const dest = parsed.destination || 'unknown';
+          toast.success(`ACK Gateway: da gui lenh den ${dest}`);
+          return;
+        }
+
+        if (isMeshAck(parsed)) {
+          const from = parsed.fromId || 'unknown';
+          const reason = parsed.errorReason || 'NONE';
+          toast.info(`ACK Mesh tu ${from} | status: ${reason}`);
+          return;
+        }
+
+        if (isCommandDelivery(parsed)) {
+          const status = String(parsed.status || 'unknown').toLowerCase();
+          const destination = parsed.destination || 'unknown';
+          const reason = parsed.errorReason || 'NONE';
+          if (status === 'delivered') {
+            toast.success(`Delivery OK: ${destination}`);
+          } else if (status === 'failed') {
+            toast.error(`Delivery FAIL: ${destination} (${reason})`);
+          } else if (status === 'missed') {
+            toast.warn(`Delivery MISS: ${destination} (timeout)`);
+          } else {
+            toast.info(`Delivery ${status}: ${destination} (${reason})`);
+          }
+          return;
+        }
+
+        if (isIncomingMeshMessage(parsed)) {
+          const from = parsed.fromId || 'Unknown';
+          const text = (parsed.text || '').trim();
+          const signal = Number.isFinite(Number(parsed.rxRssi)) ? ` | RSSI ${parsed.rxRssi} dBm` : '';
+          if (text) {
+            toast.success(`Phan hoi tu ${from}: ${text}${signal}`);
+          } else {
+            toast.info(`Nhan packet tu ${from}${signal}`);
+          }
+          return;
+        }
         
         const incomingNodes = extractIncomingNodes(parsed);
         if (!incomingNodes) {
@@ -221,6 +285,31 @@ function MapDashboard({ gatewayUrl }) {
     };
   }, [gatewayUrl]);
 
+  useEffect(() => {
+    if (!selectedNodeId && activeNodes[0]?.id) {
+      setSelectedNodeId(activeNodes[0].id);
+      return;
+    }
+
+    if (selectedNodeId && !nodes.some((node) => node.id === selectedNodeId)) {
+      setSelectedNodeId(activeNodes[0]?.id || nodes[0]?.id || '');
+    }
+  }, [activeNodes, nodes, selectedNodeId]);
+
+  function handleSelectNode(node) {
+    if (!node?.id) {
+      return;
+    }
+
+    setSelectedNodeId(node.id);
+
+    if (mapRef.current && Number.isFinite(node.lat) && Number.isFinite(node.lng)) {
+      mapRef.current.flyTo([node.lat, node.lng], Math.max(mapRef.current.getZoom(), 13), {
+        duration: 0.8,
+      });
+    }
+  }
+
   return (
     <section className="map-dashboard">
       <header className="map-header">
@@ -231,6 +320,20 @@ function MapDashboard({ gatewayUrl }) {
       <div className="monitor-layout">
         <aside className="node-sidebar">
           <h3>Node Dang Hoat Dong</h3>
+
+          {selectedNode && (
+            <div className="selected-node-panel">
+              <h4>Thong so node dang chon</h4>
+              <p><strong>Ten:</strong> {selectedNode.name}</p>
+              <p><strong>ID:</strong> {selectedNode.id}</p>
+              <p><strong>Loai:</strong> {selectedNode.type === 'gateway' ? 'Gateway' : 'Node ngoai'}</p>
+              <p><strong>Trang thai:</strong> {selectedNode.status === 'online' ? 'Online' : 'Offline'}</p>
+              <p><strong>Pin:</strong> {Number.isFinite(selectedNode.battery) ? `${selectedNode.battery}%` : 'N/A'}</p>
+              <p><strong>Tin hieu:</strong> {Number.isFinite(selectedNode.rssi) ? `${selectedNode.rssi} dBm` : 'N/A'}</p>
+              <p><strong>Last seen:</strong> {selectedNode.lastSeen || formatLastUpdated(selectedNode.lastUpdated)}</p>
+            </div>
+          )}
+
           {activeNodes.length === 0 && <p className="empty-side">Chua co node online.</p>}
 
           {activeNodes.map((node) => {
@@ -238,7 +341,12 @@ function MapDashboard({ gatewayUrl }) {
             const batteryValue = Number.isFinite(node.battery) ? Math.max(0, Math.min(100, node.battery)) : 0;
 
             return (
-              <div key={node.id} className="node-row">
+              <button
+                key={node.id}
+                type="button"
+                className={`node-row ${selectedNode?.id === node.id ? 'selected' : ''}`}
+                onClick={() => handleSelectNode(node)}
+              >
                 <div className="node-row-head">
                   <strong>{node.name}</strong>
                   <span>{node.id}</span>
@@ -248,19 +356,64 @@ function MapDashboard({ gatewayUrl }) {
                 </div>
                 <div className="node-row-foot">
                   <span>Pin: {Number.isFinite(node.battery) ? `${node.battery}%` : 'N/A'}</span>
+                  <span>Tin hieu: {Number.isFinite(node.rssi) ? `${node.rssi} dBm` : 'N/A'}</span>
                   <span>Last seen: {node.lastSeen || formatLastUpdated(node.lastUpdated)}</span>
                 </div>
-              </div>
+              </button>
+            );
+          })}
+
+          <h3 className="offline-title">Node Da Mat Ket Noi</h3>
+          {offlineNodes.length === 0 && <p className="empty-side">Khong co node offline.</p>}
+          {offlineNodes.map((node) => {
+            const batteryClass = getBatteryClass(node.battery);
+            const batteryValue = Number.isFinite(node.battery) ? Math.max(0, Math.min(100, node.battery)) : 0;
+
+            return (
+              <button
+                key={node.id}
+                type="button"
+                className={`node-row offline ${selectedNode?.id === node.id ? 'selected' : ''}`}
+                onClick={() => handleSelectNode(node)}
+              >
+                <div className="node-row-head">
+                  <strong>{node.name}</strong>
+                  <span>{node.id}</span>
+                </div>
+                <div className="battery-track">
+                  <div className={`battery-fill ${batteryClass}`} style={{ width: `${batteryValue}%` }} />
+                </div>
+                <div className="node-row-foot">
+                  <span>Pin: {Number.isFinite(node.battery) ? `${node.battery}%` : 'N/A'}</span>
+                  <span>Tin hieu: {Number.isFinite(node.rssi) ? `${node.rssi} dBm` : 'N/A'}</span>
+                  <span>Last seen: {node.lastSeen || formatLastUpdated(node.lastUpdated)}</span>
+                </div>
+              </button>
             );
           })}
         </aside>
 
         <div className="map-shell">
-          <MapContainer center={HYDRO_CENTER} zoom={12} className="leaflet-map" scrollWheelZoom>
+          <MapContainer
+            center={HYDRO_CENTER}
+            zoom={12}
+            className="leaflet-map"
+            scrollWheelZoom
+            whenCreated={(map) => {
+              mapRef.current = map;
+            }}
+          >
             <TileLayer url={tileUrl} attribution={attribution} />
 
             {mapNodes.map((node) => (
-              <Marker key={node.id} position={[node.lat, node.lng]} icon={createNodeIcon(node)}>
+              <Marker
+                key={node.id}
+                position={[node.lat, node.lng]}
+                icon={createNodeIcon(node)}
+                eventHandlers={{
+                  click: () => handleSelectNode(node),
+                }}
+              >
                 <Popup>
                   <div className="popup-content">
                     <h3>{node.name}</h3>

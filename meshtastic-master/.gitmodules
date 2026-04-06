@@ -1,0 +1,3 @@
+[submodule "static/design"]
+	path = static/design
+	url = https://github.com/meshtastic/design/

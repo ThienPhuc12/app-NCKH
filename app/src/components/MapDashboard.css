@@ -41,6 +41,31 @@
   margin: 4px 0 10px;
 }
 
+.offline-title {
+  margin-top: 14px;
+  color: #fca5a5;
+}
+
+.selected-node-panel {
+  border: 1px solid rgba(56, 189, 248, 0.45);
+  background: rgba(15, 23, 42, 0.95);
+  border-radius: 10px;
+  padding: 10px;
+  margin-bottom: 10px;
+}
+
+.selected-node-panel h4 {
+  margin: 0 0 8px;
+  font-size: 14px;
+  color: #7dd3fc;
+}
+
+.selected-node-panel p {
+  margin: 2px 0;
+  color: #dbeafe;
+  font-size: 13px;
+}
+
 .empty-side {
   color: #cbd5e1;
 }
@@ -50,6 +75,27 @@
   border-radius: 10px;
   padding: 10px;
   margin-bottom: 10px;
+  width: 100%;
+  text-align: left;
+  background: rgba(2, 6, 23, 0.5);
+  color: inherit;
+  cursor: pointer;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+}
+
+.node-row:hover {
+  border-color: rgba(125, 211, 252, 0.55);
+  transform: translateY(-1px);
+}
+
+.node-row.selected {
+  border-color: rgba(56, 189, 248, 0.95);
+  box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.35), 0 0 16px rgba(56, 189, 248, 0.2);
+}
+
+.node-row.offline {
+  border-color: rgba(248, 113, 113, 0.45);
+  background: rgba(30, 10, 12, 0.45);
 }
 
 .node-row-head {

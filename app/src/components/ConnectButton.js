@@ -2,6 +2,62 @@ import { useEffect, useRef, useState } from 'react';
 import { toast } from 'react-toastify';
 import './ConnectButton.css';
 
+function scorePort(port) {
+  if (Number.isFinite(port?.score)) {
+    return port.score;
+  }
+
+  const text = `${port?.description || ''} ${port?.manufacturer || ''} ${port?.hwid || ''} ${port?.device || ''}`.toLowerCase();
+  let score = 0;
+  ['heltec', 'meshtastic', 'cp210', 'ch340', 'usb serial', 'uart', 'cdc'].forEach((token) => {
+    if (text.includes(token)) {
+      score += 2;
+    }
+  });
+  if ((port?.device || '').toUpperCase().startsWith('COM')) {
+    score += 1;
+  }
+  return score;
+}
+
+function chooseBestPort(ports) {
+  if (!ports?.length) {
+    return null;
+  }
+
+  const ranked = [...ports].sort((a, b) => {
+    const scoreDiff = scorePort(b) - scorePort(a);
+    if (scoreDiff !== 0) {
+      return scoreDiff;
+    }
+    const boardMatchDiff = Number(Boolean(b?.matched_board)) - Number(Boolean(a?.matched_board));
+    if (boardMatchDiff !== 0) {
+      return boardMatchDiff;
+    }
+    return (b?.device || '').localeCompare(a?.device || '');
+  });
+
+  return ranked[0]?.device || null;
+}
+
+function formatPortLabel(port) {
+  const tags = [];
+  if (port?.matched_board) {
+    tags.push(port.matched_board);
+  } else if (port?.is_heltec) {
+    tags.push('Heltec-like');
+  }
+  if (port?.matched_vendor) {
+    tags.push(port.matched_vendor);
+  }
+  if (port?.hwid_matched) {
+    tags.push('VID/PID match');
+  }
+
+  const tagText = tags.length > 0 ? ` [${tags.join(' | ')}]` : '';
+  return `${port.device}${tagText} - ${port.description}`;
+}
+
 function ConnectButton({ gatewayUrl }) {
   const [connectionStatus, setConnectionStatus] = useState('scanning'); // 'scanning', 'connected', 'error', 'disconnected'
   const [portName, setPortName] = useState(null);
@@ -14,6 +70,16 @@ function ConnectButton({ gatewayUrl }) {
   const socketRef = useRef(null);
   const autoScanIntervalRef = useRef(null);
   const keepAliveTimeoutRef = useRef(null);
+  const selectedPortRef = useRef(null);
+  const connectionStatusRef = useRef('scanning');
+
+  useEffect(() => {
+    selectedPortRef.current = selectedPort;
+  }, [selectedPort]);
+
+  useEffect(() => {
+    connectionStatusRef.current = connectionStatus;
+  }, [connectionStatus]);
 
   // Initialize WebSocket and auto-scan logic
   useEffect(() => {
@@ -29,7 +95,7 @@ function ConnectButton({ gatewayUrl }) {
       if (autoScanIntervalRef.current) clearInterval(autoScanIntervalRef.current);
       autoScanIntervalRef.current = setInterval(() => {
         if (socketRef.current?.readyState === WebSocket.OPEN &&
-            connectionStatus !== 'connected') {
+            connectionStatusRef.current !== 'connected') {
           console.log('[ConnectButton] Auto-scanning for ports...');
           socketRef.current.send(JSON.stringify({ type: 'GET_PORTS' }));
         }
@@ -48,12 +114,20 @@ function ConnectButton({ gatewayUrl }) {
           const ports = parsed.ports || [];
           setAvailablePorts(ports);
           console.log(`[ConnectButton] Received ${ports.length} ports:`, ports);
-          
-          // Auto-select Heltec if found
-          const heltecPort = ports.find(p => p.is_heltec);
-          if (heltecPort && !selectedPort) {
-            setSelectedPort(heltecPort.device);
-            console.log(`[ConnectButton] Auto-selected Heltec on ${heltecPort.device}`);
+
+          const currentSelectedPort = selectedPortRef.current;
+          const validDevices = new Set(ports.map((p) => p.device));
+          if (currentSelectedPort && !validDevices.has(currentSelectedPort)) {
+            setSelectedPort(null);
+          }
+
+          // Auto-select best candidate if current selection is empty or stale.
+          if (!currentSelectedPort || !validDevices.has(currentSelectedPort)) {
+            const bestPort = chooseBestPort(ports);
+            if (bestPort) {
+              setSelectedPort(bestPort);
+              console.log(`[ConnectButton] Auto-selected best port: ${bestPort}`);
+            }
           }
         }
         
@@ -63,6 +137,11 @@ function ConnectButton({ gatewayUrl }) {
           setConnectionStatus('error');
           setErrorMessage(parsed.message);
           setPortName(null);
+
+          const loweredMessage = String(parsed.message || '').toLowerCase();
+          if (loweredMessage.includes('access is denied')) {
+            toast.error('Cổng COM đang bị ứng dụng khác giữ. Hãy đóng Meshtastic app/Serial Monitor rồi thử lại.');
+          }
         }
 
         // Handle explicit connection status updates from gateway
@@ -84,7 +163,7 @@ function ConnectButton({ gatewayUrl }) {
         // Handle keep-alive (connection status) - THIS IS THE ONLY SOURCE OF TRUTH FOR CONNECTION STATUS
         if (parsed.type === 'KEEP_ALIVE') {
           if (parsed.status === 'connected') {
-            if (connectionStatus !== 'connected') {
+            if (connectionStatusRef.current !== 'connected') {
               console.log('[ConnectButton] Device connected - received keep-alive with status=connected');
               setConnectionStatus('connected');
               setErrorMessage(null);
@@ -93,7 +172,7 @@ function ConnectButton({ gatewayUrl }) {
               toast.success(`✓ Kết nối thành công: ${parsed.port}`);
             }
           } else if (parsed.status === 'scanning') {
-            if (connectionStatus === 'connected') {
+            if (connectionStatusRef.current === 'connected') {
               console.log('[ConnectButton] Connection lost - keep-alive status=scanning while was connected');
               setConnectionStatus('disconnected');
               setErrorMessage('Mất kết nối. Kiểm tra cáp USB hoặc cấu hình thiết bị.');
@@ -258,7 +337,7 @@ function ConnectButton({ gatewayUrl }) {
                 <option value="">-- Chọn cổng COM --</option>
                 {availablePorts.map((port) => (
                   <option key={port.device} value={port.device}>
-                    {port.device} {port.is_heltec ? '(Heltec)' : ''} - {port.description}
+                    {formatPortLabel(port)}
                   </option>
                 ))}
               </select>
