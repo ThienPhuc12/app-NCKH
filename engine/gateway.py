@@ -1037,6 +1037,13 @@ class MeshtasticGateway:
                         pending = self.pending_commands.pop(packet_id, None)
                         if not pending:
                             continue
+
+                        destination = str(pending.get("destination") or "").strip()
+                        if destination and destination in self.nodes:
+                            self.nodes[destination]["status"] = "offline"
+                            self.nodes[destination]["lastUpdated"] = self._iso_from_timestamp(now_ts)
+                            self.node_activity.pop(destination, None)
+
                         await self.broadcast_command_delivery(
                             {
                                 **pending,
@@ -1045,6 +1052,9 @@ class MeshtasticGateway:
                                 "resolvedAt": self._iso_from_timestamp(now_ts),
                             }
                         )
+
+                    if timed_out_ids:
+                        await self.broadcast_nodes()
                 except Exception as e:
                     logging.warning(f"Error during periodic node refresh: {e}")
             
