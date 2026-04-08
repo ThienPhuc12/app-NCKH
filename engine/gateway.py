@@ -55,6 +55,7 @@ class MeshtasticGateway:
         self.loop: Optional[asyncio.AbstractEventLoop] = None
         self._subscribed = False
         self.pending_commands: dict[int, dict[str, Any]] = {}
+        self.node_activity: dict[str, float] = {}
 
         self._cb_node_updated = self._on_node_updated
         self._cb_connection_established = self._on_connection_established
@@ -223,6 +224,9 @@ class MeshtasticGateway:
         if not node_id:
             return None
 
+        previous_node = self.nodes.get(str(node_id)) or {}
+        activity_ts = self.node_activity.get(str(node_id))
+
         position = node.get("position") or {}
         lat = self._safe_float(position.get("latitude"))
         lng = self._safe_float(position.get("longitude"))
@@ -244,14 +248,31 @@ class MeshtasticGateway:
         if rssi is None:
             rssi = self._safe_float(node.get("snr"))
 
-        last_heard = self._safe_float(node.get("lastHeard"))
-        now = datetime.now(timezone.utc).timestamp()
-        status = "online"
-        if last_heard is not None and now - last_heard > 600:
-            status = "offline"
-
         local_num = self.conn.iface.myInfo.my_node_num if (self.conn.iface and self.conn.iface.myInfo) else None
         node_type = "gateway" if (local_num is not None and node_num == local_num) else "alarm"
+
+        last_heard = self._safe_float(node.get("lastHeard"))
+        now = datetime.now(timezone.utc).timestamp()
+        recent_activity = activity_ts is not None and (now - activity_ts) <= OFFLINE_TIMEOUT_SECONDS
+
+        # Gateway node should stay online while serial link is up.
+        if node_type == "gateway":
+            status = "online"
+            last_updated_iso = self._iso_from_timestamp(last_heard if last_heard is not None else now)
+        else:
+            # Recent packet activity overrides stale interface snapshots so replied nodes move back online.
+            if recent_activity:
+                status = "online"
+                last_updated_iso = self._iso_from_timestamp(activity_ts)
+            # If we never heard this remote node, keep it offline instead of defaulting to online.
+            elif last_heard is None:
+                status = "offline"
+                # Prefer the last known timestamp from runtime cache.
+                # If there is no historical timestamp yet, use first-seen time in this session.
+                last_updated_iso = str(previous_node.get("lastUpdated") or self._iso_from_timestamp(now))
+            else:
+                status = "online" if (now - last_heard) <= OFFLINE_TIMEOUT_SECONDS else "offline"
+                last_updated_iso = self._iso_from_timestamp(last_heard)
 
         return {
             "id": node_id,
@@ -262,11 +283,12 @@ class MeshtasticGateway:
             "type": node_type,
             "battery": battery,
             "rssi": rssi,
-            "lastUpdated": self._iso_from_timestamp(last_heard),
+            "lastUpdated": last_updated_iso,
             "raw": {
                 "num": node_num,
                 "shortName": user.get("shortName"),
                 "hwModel": user.get("hwModel"),
+                "hasLastHeard": last_heard is not None,
             },
         }
 
@@ -337,6 +359,11 @@ class MeshtasticGateway:
             return f"!{from_num:08x}"
 
         return None
+
+    def _record_node_activity(self, node_id: Optional[str], timestamp: Optional[float] = None) -> None:
+        if not node_id:
+            return
+        self.node_activity[str(node_id)] = float(timestamp if timestamp is not None else datetime.now(timezone.utc).timestamp())
 
     def _extract_packet_metrics(self, packet: dict[str, Any]) -> tuple[Optional[float], Optional[float], float]:
         decoded = packet.get("decoded") or {}
@@ -469,6 +496,8 @@ class MeshtasticGateway:
 
         node_num = node.get("num")
         logging.info(f"Node updated event - node_num: {node_num}, user_id: {node.get('user', {}).get('id')}")
+        node_id = (node.get("user") or {}).get("id") or self._node_id_from_num(node_num)
+        self._record_node_activity(node_id, self._safe_float(node.get("lastHeard")))
         normalized = self._normalize_node(node)
         if not normalized:
             logging.warning(f"Failed to normalize node {node_num}")
@@ -486,6 +515,8 @@ class MeshtasticGateway:
         from_id = self._packet_sender_id(packet)
         battery, rssi, rx_time = self._extract_packet_metrics(packet)
         text = self._extract_packet_text(packet)
+
+        self._record_node_activity(from_id, rx_time)
 
         if from_id and from_id in self.nodes:
             self.nodes[from_id]["lastUpdated"] = self._iso_from_timestamp(rx_time)
@@ -632,6 +663,7 @@ class MeshtasticGateway:
         self.conn.iface = None
         self.conn.port_name = None
         self.nodes = {}
+        self.node_activity = {}
 
     async def connect_port(self, port_name: str) -> tuple[bool, str]:
         async with self.lock:
@@ -972,6 +1004,10 @@ class MeshtasticGateway:
 
                     now_ts = datetime.now(timezone.utc).timestamp()
                     for node in self.nodes.values():
+                        has_last_heard = bool(((node.get("raw") or {}).get("hasLastHeard")))
+                        if not has_last_heard:
+                            continue
+
                         seen_ts = self._timestamp_from_iso(node.get("lastUpdated"))
                         if seen_ts is None:
                             continue

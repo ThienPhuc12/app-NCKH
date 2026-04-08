@@ -1,0 +1,26 @@
+{
+  "repoId": "4a793487-94dd-4da4-b3c0-b71de0b829fe",
+  "repoName": "Web Dashboard NCKH",
+  "server": "https://api.grapuco.com",
+  "language": "cpp",
+  "features": {
+    "embeddings": true,
+    "dataFlowAnalysis": true
+  },
+  "ignore": [
+    "node_modules",
+    "dist",
+    ".next",
+    ".git",
+    ".grapuco",
+    "__pycache__",
+    "vendor",
+    "target",
+    "build",
+    "app/build",
+    "firmware-develop",
+    "meshtastic-master",
+    "web-main"
+  ],
+  "lastPush": "2026-04-06T18:20:40.051Z"
+}
