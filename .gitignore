@@ -31,3 +31,18 @@ Thumbs.db
 
 # Temporary
 .tmp/
+
+# Archives / installers
+*.zip
+*.7z
+*.rar
+*.exe
+*.msi
+*.blockmap
+
+# Electron / PyInstaller outputs
+app/dist-electron/
+app/.pyinstaller-work/
+app/.pyinstaller-spec/
+app/resources/gateway/
+engine/dist/

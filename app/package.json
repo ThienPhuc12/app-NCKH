@@ -1,26 +1,81 @@
 {
   "name": "app",
   "version": "0.1.0",
+  "description": "He thong canh bao lu desktop app",
+  "author": "NCKH Team",
   "private": true,
   "homepage": ".",
+  "main": "electron/main.js",
   "dependencies": {
     "@testing-library/dom": "^10.4.1",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^13.5.0",
     "leaflet": "^1.9.4",
+    "maplibre-gl": "^5.23.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "react-leaflet": "^5.0.0",
+    "react-map-gl": "^8.1.1",
     "react-scripts": "5.0.1",
     "react-toastify": "^11.0.5",
     "web-vitals": "^2.1.4"
   },
+  "devDependencies": {
+    "electron": "^31.7.7",
+    "electron-builder": "^25.1.8",
+    "jimp": "^1.6.1",
+    "png-to-ico": "^3.0.1"
+  },
   "scripts": {
-    "start": "react-scripts start",
+    "build:gateway": "node scripts/build-gateway.js",
+    "start": "node scripts/start-with-gateway.js",
     "build": "react-scripts build",
+    "build:web": "react-scripts build",
+    "dist:win": "npm run build:gateway && npm run build:web && electron-builder --win nsis --publish never",
     "test": "react-scripts test",
     "eject": "react-scripts eject"
+  },
+  "build": {
+    "extends": null,
+    "appId": "com.nckh.hethongcanhbao",
+    "productName": "He Thong Canh Bao Lu",
+    "icon": "public/favicon.ico",
+    "directories": {
+      "buildResources": "public",
+      "output": "dist-electron"
+    },
+    "extraResources": [
+      {
+        "from": "resources/gateway",
+        "to": "gateway"
+      }
+    ],
+    "files": [
+      "build/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "win": {
+      "signAndEditExecutable": false,
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "HeThongCanhBao-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "He Thong Canh Bao Lu"
+    }
   },
   "eslintConfig": {
     "extends": [

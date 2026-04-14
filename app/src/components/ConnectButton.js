@@ -72,6 +72,8 @@ function ConnectButton({ gatewayUrl }) {
   const keepAliveTimeoutRef = useRef(null);
   const selectedPortRef = useRef(null);
   const connectionStatusRef = useRef('scanning');
+  const isConnectingRef = useRef(false);
+  const lastAutoConnectRef = useRef({ port: null, time: 0 });
 
   useEffect(() => {
     selectedPortRef.current = selectedPort;
@@ -80,6 +82,36 @@ function ConnectButton({ gatewayUrl }) {
   useEffect(() => {
     connectionStatusRef.current = connectionStatus;
   }, [connectionStatus]);
+
+  useEffect(() => {
+    isConnectingRef.current = isConnecting;
+  }, [isConnecting]);
+
+  const requestConnectPort = (port, source = 'manual') => {
+    if (!port) {
+      return;
+    }
+    if (socketRef.current?.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    if (connectionStatusRef.current === 'connected' || isConnectingRef.current) {
+      return;
+    }
+
+    setIsConnecting(true);
+    setConnectionStatus('connecting');
+    if (source === 'manual') {
+      setConnectButtonDisabled(true);
+    }
+
+    socketRef.current.send(JSON.stringify({ type: 'CONNECT_PORT', port }));
+
+    const releaseDelay = source === 'manual' ? 3000 : 1500;
+    setTimeout(() => {
+      setIsConnecting(false);
+      setConnectButtonDisabled(false);
+    }, releaseDelay);
+  };
 
   // Initialize WebSocket and auto-scan logic
   useEffect(() => {
@@ -127,6 +159,17 @@ function ConnectButton({ gatewayUrl }) {
             if (bestPort) {
               setSelectedPort(bestPort);
               console.log(`[ConnectButton] Auto-selected best port: ${bestPort}`);
+
+              const now = Date.now();
+              const recentlyTried =
+                lastAutoConnectRef.current.port === bestPort &&
+                now - lastAutoConnectRef.current.time < 5000;
+
+              if (!recentlyTried && connectionStatusRef.current !== 'connected' && !isConnectingRef.current) {
+                lastAutoConnectRef.current = { port: bestPort, time: now };
+                console.log(`[ConnectButton] Auto-connecting to ${bestPort}`);
+                requestConnectPort(bestPort, 'auto');
+              }
             }
           }
         }
@@ -203,7 +246,7 @@ function ConnectButton({ gatewayUrl }) {
     socket.onerror = (error) => {
       console.error('[ConnectButton] WebSocket error:', error);
       setConnectionStatus('error');
-      setErrorMessage('Lỗi kết nối WebSocket');
+      setErrorMessage('Khong ket noi duoc gateway USB. Hay dam bao engine/gateway.py dang chay va ws://127.0.0.1:8765 mo.');
     };
 
     socket.onclose = () => {
@@ -229,26 +272,8 @@ function ConnectButton({ gatewayUrl }) {
       return;
     }
 
-    setIsConnecting(true);
-    setConnectButtonDisabled(true);
-
-    try {
-      console.log(`[ConnectButton] Attempting to connect to ${selectedPort}...`);
-      setConnectionStatus('connecting');
-      
-      // Explicitly request gateway to connect selected COM port
-      if (socketRef.current?.readyState === WebSocket.OPEN) {
-        socketRef.current.send(
-          JSON.stringify({ type: 'CONNECT_PORT', port: selectedPort })
-        );
-      }
-      
-      // Disable button for 3 seconds
-      await new Promise(resolve => setTimeout(resolve, 3000));
-    } finally {
-      setIsConnecting(false);
-      setConnectButtonDisabled(false);
-    }
+    console.log(`[ConnectButton] Attempting to connect to ${selectedPort}...`);
+    requestConnectPort(selectedPort, 'manual');
   };
 
   const handleRetry = () => {
@@ -357,6 +382,7 @@ function ConnectButton({ gatewayUrl }) {
               <ul>
                 <li>✓ Cắm cáp USB vào Heltec module</li>
                 <li>✓ Kiểm tra driver trong Device Manager</li>
+                <li>✓ Chạy gateway Python engine/gateway.py để web đọc danh sách COM</li>
                 <li>✓ Chờ 2-3 giây để hệ thống nhận diện</li>
               </ul>
             </div>

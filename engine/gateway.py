@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,6 +22,16 @@ HOST = "127.0.0.1"
 PORT = 8765
 OFFLINE_TIMEOUT_SECONDS = int(os.getenv("MESH_NODE_OFFLINE_TIMEOUT", "30"))
 ACK_TIMEOUT_SECONDS = int(os.getenv("MESH_ACK_TIMEOUT", "18"))
+FANOUT_RETRY_COUNT = int(os.getenv("MESH_FANOUT_RETRIES", "1"))
+FANOUT_SEND_GAP_SECONDS = float(os.getenv("MESH_FANOUT_SEND_GAP_SECONDS", "0.2"))
+PENDING_TIMEOUT_RETRIES = int(os.getenv("MESH_PENDING_TIMEOUT_RETRIES", "1"))
+PENDING_RETRY_GAP_SECONDS = float(os.getenv("MESH_PENDING_RETRY_GAP_SECONDS", "0.35"))
+EXCLUDED_NODE_IDS = {
+    "!849ad4d4",
+}
+EXCLUDED_NODE_SUFFIXES = {
+    "d4d4",
+}
 
 
 logging.basicConfig(
@@ -77,10 +88,47 @@ class MeshtasticGateway:
                 return None
         return None
 
+    @staticmethod
+    def _candidate_firmware_roots() -> list[Path]:
+        roots: list[Path] = []
+
+        # Source tree when running from python script.
+        roots.append(Path(__file__).resolve().parent.parent)
+
+        # PyInstaller onefile extraction directory.
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            roots.append(Path(str(meipass)).resolve())
+
+        # Directory of the executable for packaged runs.
+        if getattr(sys, "frozen", False):
+            roots.append(Path(sys.executable).resolve().parent)
+
+        unique_roots: list[Path] = []
+        seen: set[str] = set()
+        for root in roots:
+            key = str(root)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique_roots.append(root)
+        return unique_roots
+
     def _load_firmware_board_signatures(self) -> None:
-        boards_dir = Path(__file__).resolve().parent.parent / "firmware-develop" / "boards"
-        if not boards_dir.exists():
-            logging.info("Firmware board directory not found: %s", boards_dir)
+        boards_dir = None
+        tried_paths: list[Path] = []
+        for root in self._candidate_firmware_roots():
+            candidate = root / "firmware-develop" / "boards"
+            tried_paths.append(candidate)
+            if candidate.exists():
+                boards_dir = candidate
+                break
+
+        if boards_dir is None:
+            logging.info(
+                "Firmware board directory not found. Tried: %s",
+                ", ".join(str(path) for path in tried_paths),
+            )
             return
 
         loaded_count = 0
@@ -213,6 +261,31 @@ class MeshtasticGateway:
         except (TypeError, ValueError, OSError):
             return datetime.now(timezone.utc).isoformat()
 
+    @staticmethod
+    def _normalize_node_id(value: Any) -> str:
+        text = str(value or "").strip().lower()
+        if not text:
+            return ""
+        if text.startswith("!"):
+            return text
+        if re.fullmatch(r"[0-9a-f]{8}", text):
+            return f"!{text}"
+        return text
+
+    @classmethod
+    def _is_excluded_node_id(cls, value: Any) -> bool:
+        normalized = cls._normalize_node_id(value)
+        if not normalized:
+            return False
+
+        if normalized in EXCLUDED_NODE_IDS:
+            return True
+
+        if normalized.startswith("!") and len(normalized) >= 5:
+            return normalized[-4:] in EXCLUDED_NODE_SUFFIXES
+
+        return normalized in EXCLUDED_NODE_SUFFIXES
+
     def _normalize_node(self, node: dict[str, Any]) -> Optional[dict[str, Any]]:
         node_num = node.get("num")
         user = node.get("user") or {}
@@ -222,6 +295,9 @@ class MeshtasticGateway:
             node_id = f"!{node_num:08x}"
 
         if not node_id:
+            return None
+
+        if self._is_excluded_node_id(node_id):
             return None
 
         previous_node = self.nodes.get(str(node_id)) or {}
@@ -253,26 +329,22 @@ class MeshtasticGateway:
 
         last_heard = self._safe_float(node.get("lastHeard"))
         now = datetime.now(timezone.utc).timestamp()
-        recent_activity = activity_ts is not None and (now - activity_ts) <= OFFLINE_TIMEOUT_SECONDS
 
         # Gateway node should stay online while serial link is up.
         if node_type == "gateway":
             status = "online"
             last_updated_iso = self._iso_from_timestamp(last_heard if last_heard is not None else now)
         else:
-            # Recent packet activity overrides stale interface snapshots so replied nodes move back online.
-            if recent_activity:
-                status = "online"
+            # For alert fan-out, keep nodes sendable regardless stale telemetry.
+            # Remote node becomes offline only when delivery timeout marks it missed.
+            previous_status = str(previous_node.get("status") or "").lower()
+            status = "offline" if previous_status == "offline" else "online"
+            if activity_ts is not None:
                 last_updated_iso = self._iso_from_timestamp(activity_ts)
-            # If we never heard this remote node, keep it offline instead of defaulting to online.
-            elif last_heard is None:
-                status = "offline"
-                # Prefer the last known timestamp from runtime cache.
-                # If there is no historical timestamp yet, use first-seen time in this session.
-                last_updated_iso = str(previous_node.get("lastUpdated") or self._iso_from_timestamp(now))
-            else:
-                status = "online" if (now - last_heard) <= OFFLINE_TIMEOUT_SECONDS else "offline"
+            elif last_heard is not None:
                 last_updated_iso = self._iso_from_timestamp(last_heard)
+            else:
+                last_updated_iso = str(previous_node.get("lastUpdated") or self._iso_from_timestamp(now))
 
         return {
             "id": node_id,
@@ -427,6 +499,7 @@ class MeshtasticGateway:
         request_id: Any,
         destination: Any,
         text: str,
+        retry_count: int = 0,
     ) -> None:
         if not isinstance(packet_id, int):
             return
@@ -438,6 +511,63 @@ class MeshtasticGateway:
             "text": text,
             "createdAt": datetime.now(timezone.utc).timestamp(),
             "status": "pending",
+            "retryCount": int(max(0, retry_count)),
+        }
+
+    async def _retry_pending_command(self, pending: dict[str, Any]) -> Optional[dict[str, Any]]:
+        iface = self.conn.iface
+        if not iface or not iface.isConnected.is_set():
+            return None
+
+        destination = pending.get("destination")
+        if destination in {BROADCAST_ADDR, LOCAL_ADDR}:
+            return None
+
+        retry_count = int(pending.get("retryCount") or 0)
+        if retry_count >= PENDING_TIMEOUT_RETRIES:
+            return None
+
+        text = str(pending.get("text") or "").strip() or "BAODONG"
+        await asyncio.sleep(max(0.0, PENDING_RETRY_GAP_SECONDS))
+
+        async with self.lock:
+            iface = self.conn.iface
+            if not iface or not iface.isConnected.is_set():
+                return None
+
+            try:
+                sent_packet = await asyncio.to_thread(
+                    iface.sendText,
+                    text,
+                    destination,
+                    True,
+                    True,
+                )
+            except Exception:
+                return None
+
+        packet_id = getattr(sent_packet, "id", None)
+        if not isinstance(packet_id, int):
+            return None
+
+        self._register_pending_command(
+            packet_id,
+            pending.get("requestId"),
+            destination,
+            text,
+            retry_count=retry_count + 1,
+        )
+
+        return {
+            "packetId": packet_id,
+            "requestId": pending.get("requestId"),
+            "destination": destination,
+            "destinationName": self._node_name_by_id(destination),
+            "text": text,
+            "status": "pending",
+            "retryCount": retry_count + 1,
+            "errorReason": f"RETRY_{retry_count + 1}",
+            "resolvedAt": self._iso_from_timestamp(datetime.now(timezone.utc).timestamp()),
         }
 
     def _consume_pending_command(self, packet_id: Any) -> Optional[dict[str, Any]]:
@@ -457,6 +587,37 @@ class MeshtasticGateway:
         if candidate is None:
             return None
         return self.pending_commands.pop(candidate, None)
+
+    def _consume_pending_by_destination(
+        self,
+        destination_id: Any,
+        max_age_seconds: Optional[float] = None,
+    ) -> Optional[dict[str, Any]]:
+        key = str(destination_id or "").strip()
+        if not key:
+            return None
+
+        now_ts = datetime.now(timezone.utc).timestamp()
+        selected_packet_id: Optional[int] = None
+        selected_created_at: Optional[float] = None
+
+        for packet_id, pending in self.pending_commands.items():
+            destination = str(pending.get("destination") or "").strip()
+            if destination != key:
+                continue
+
+            created_at = float(pending.get("createdAt") or now_ts)
+            if max_age_seconds is not None and (now_ts - created_at) > max_age_seconds:
+                continue
+
+            if selected_packet_id is None or (selected_created_at is not None and created_at < selected_created_at):
+                selected_packet_id = packet_id
+                selected_created_at = created_at
+
+        if selected_packet_id is None:
+            return None
+
+        return self.pending_commands.pop(selected_packet_id, None)
 
     def _schedule_coroutine(self, coro_func, *args) -> None:
         if not self.loop:
@@ -497,6 +658,11 @@ class MeshtasticGateway:
         node_num = node.get("num")
         logging.info(f"Node updated event - node_num: {node_num}, user_id: {node.get('user', {}).get('id')}")
         node_id = (node.get("user") or {}).get("id") or self._node_id_from_num(node_num)
+        if self._is_excluded_node_id(node_id):
+            self.node_activity.pop(str(node_id), None)
+            self.nodes.pop(str(node_id), None)
+            return
+
         self._record_node_activity(node_id, self._safe_float(node.get("lastHeard")))
         normalized = self._normalize_node(node)
         if not normalized:
@@ -513,6 +679,9 @@ class MeshtasticGateway:
 
         updated_any = False
         from_id = self._packet_sender_id(packet)
+        if self._is_excluded_node_id(from_id):
+            return
+
         battery, rssi, rx_time = self._extract_packet_metrics(packet)
         text = self._extract_packet_text(packet)
 
@@ -556,6 +725,7 @@ class MeshtasticGateway:
             self._schedule_coroutine(self.broadcast_nodes)
 
         decoded = packet.get("decoded") or {}
+        consumed_pending = False
         routing = decoded.get("routing") if isinstance(decoded, dict) else None
         if isinstance(routing, dict):
             request_id = routing.get("requestId") or packet.get("requestId")
@@ -575,6 +745,7 @@ class MeshtasticGateway:
 
             pending = self._consume_pending_command(request_id)
             if pending:
+                consumed_pending = True
                 normalized_reason = str(error_reason).upper()
                 delivery_status = "delivered" if normalized_reason in {"NONE", "0"} else "failed"
                 self._schedule_coroutine(
@@ -584,6 +755,22 @@ class MeshtasticGateway:
                         "status": delivery_status,
                         "ackFrom": from_id,
                         "errorReason": error_reason,
+                        "resolvedAt": self._iso_from_timestamp(rx_time),
+                    },
+                )
+
+        # Some nodes do not return routing ACK but still emit telemetry/text soon after receiving command.
+        # Treat that as delivery confirmation to avoid false ACK_TIMEOUT misses.
+        if from_id and not consumed_pending:
+            pending_by_sender = self._consume_pending_by_destination(from_id, ACK_TIMEOUT_SECONDS)
+            if pending_by_sender:
+                self._schedule_coroutine(
+                    self.broadcast_command_delivery,
+                    {
+                        **pending_by_sender,
+                        "status": "delivered",
+                        "ackFrom": from_id,
+                        "errorReason": "PACKET_RESPONSE",
                         "resolvedAt": self._iso_from_timestamp(rx_time),
                     },
                 )
@@ -808,14 +995,29 @@ class MeshtasticGateway:
                 continue
             user = node.get("user") or {}
             node_id = user.get("id") or self._node_id_from_num(node_num)
-            if not node_id or node_id == local_node_id or node_id in seen:
+            cached = self.nodes.get(str(node_id or "")) or {}
+            if (
+                not node_id
+                or node_id in seen
+                or self._is_excluded_node_id(node_id)
+            ):
                 continue
+
+            if local_node_id and node_id == local_node_id:
+                continue
+
+            # Fallback when myInfo is unavailable: rely on normalized cache to skip gateway node.
+            if not local_node_id and str(cached.get("type") or "").lower() == "gateway":
+                continue
+
             seen.add(node_id)
             targets.append(node_id)
 
         # Fallback source: current normalized cache.
-        for node_id in self.nodes.keys():
-            if node_id == local_node_id or node_id in seen:
+        for node_id, node in self.nodes.items():
+            if node_id == local_node_id or node_id in seen or self._is_excluded_node_id(node_id):
+                continue
+            if str((node or {}).get("type") or "").lower() == "gateway":
                 continue
             seen.add(node_id)
             targets.append(node_id)
@@ -827,6 +1029,18 @@ class MeshtasticGateway:
         text = (((message.get("payload") or {}).get("text")) or message.get("command") or "BAODONG").strip()
         target_id = (message.get("payload") or {}).get("targetId")
         destination = self._resolve_destination(target_id)
+
+        if destination not in {BROADCAST_ADDR, LOCAL_ADDR} and self._is_excluded_node_id(destination):
+            await self.send_json(
+                ws,
+                {
+                    "type": "error",
+                    "ok": False,
+                    "requestId": request_id,
+                    "error": "Target node is excluded from this deployment",
+                },
+            )
+            return
 
         async with self.lock:
             iface = self.conn.iface
@@ -846,26 +1060,46 @@ class MeshtasticGateway:
             if destination == BROADCAST_ADDR:
                 fanout_targets = self._broadcast_targets()
                 destinations = fanout_targets if fanout_targets else [destination]
+                logging.info(
+                    "Fanout request %s resolved %s target(s): %s",
+                    request_id,
+                    len(destinations),
+                    [str(item) for item in destinations],
+                )
             else:
                 destinations = [destination]
 
             results: list[dict[str, Any]] = []
-            for dst in destinations:
-                try:
-                    sent_packet = await asyncio.to_thread(
-                        iface.sendText,
-                        text,
-                        dst,
-                        True,
-                        True,
-                    )
-                except Exception as exc:
+            for index, dst in enumerate(destinations):
+                if destination == BROADCAST_ADDR and index > 0 and FANOUT_SEND_GAP_SECONDS > 0:
+                    await asyncio.sleep(FANOUT_SEND_GAP_SECONDS)
+
+                sent_packet = None
+                send_error = None
+                attempts = 1 + (FANOUT_RETRY_COUNT if destination == BROADCAST_ADDR else 0)
+                for attempt in range(max(1, attempts)):
+                    try:
+                        sent_packet = await asyncio.to_thread(
+                            iface.sendText,
+                            text,
+                            dst,
+                            True,
+                            True,
+                        )
+                        send_error = None
+                        break
+                    except Exception as exc:
+                        send_error = str(exc)
+                        if attempt + 1 < attempts:
+                            await asyncio.sleep(0.15)
+
+                if sent_packet is None:
                     results.append(
                         {
                             "ok": False,
                             "destination": dst,
                             "destinationName": self._node_name_by_id(dst),
-                            "error": str(exc),
+                            "error": send_error or "Unknown send error",
                         }
                     )
                     continue
@@ -914,9 +1148,17 @@ class MeshtasticGateway:
             {
                 "type": "command:summary",
                 "requestId": request_id,
+                "attempted": len(destinations),
                 "sent": len(ok_results),
                 "failed": len(results) - len(ok_results),
                 "fanout": destination == BROADCAST_ADDR,
+                "destinationsAttempted": [
+                    {
+                        "id": str(dst),
+                        "name": self._node_name_by_id(dst),
+                    }
+                    for dst in destinations
+                ],
                 "destinations": [
                     {
                         "id": item.get("destination"),
@@ -924,6 +1166,15 @@ class MeshtasticGateway:
                         "packetId": item.get("packetId"),
                     }
                     for item in ok_results
+                ],
+                "failedDestinations": [
+                    {
+                        "id": item.get("destination"),
+                        "name": item.get("destinationName"),
+                        "error": item.get("error"),
+                    }
+                    for item in results
+                    if not item.get("ok")
                 ],
             },
         )
@@ -1000,31 +1251,10 @@ class MeshtasticGateway:
                     old_count = len(self.nodes)
                     self._refresh_nodes_from_interface()
                     new_count = len(self.nodes)
-                    stale_changed = False
-
                     now_ts = datetime.now(timezone.utc).timestamp()
-                    for node in self.nodes.values():
-                        has_last_heard = bool(((node.get("raw") or {}).get("hasLastHeard")))
-                        if not has_last_heard:
-                            continue
-
-                        seen_ts = self._timestamp_from_iso(node.get("lastUpdated"))
-                        if seen_ts is None:
-                            continue
-
-                        age = now_ts - seen_ts
-                        if age > OFFLINE_TIMEOUT_SECONDS and node.get("status") != "offline":
-                            node["status"] = "offline"
-                            stale_changed = True
-                        elif age <= OFFLINE_TIMEOUT_SECONDS and node.get("status") != "online":
-                            node["status"] = "online"
-                            stale_changed = True
 
                     if new_count != old_count:
                         logging.info(f"Node count changed: {old_count} -> {new_count}. Broadcasting update...")
-                        await self.broadcast_nodes()
-                    elif stale_changed:
-                        logging.info("Node stale status changed, broadcasting update")
                         await self.broadcast_nodes()
 
                     now_ts = datetime.now(timezone.utc).timestamp()
@@ -1036,6 +1266,11 @@ class MeshtasticGateway:
                     for packet_id in timed_out_ids:
                         pending = self.pending_commands.pop(packet_id, None)
                         if not pending:
+                            continue
+
+                        retried = await self._retry_pending_command(pending)
+                        if retried:
+                            await self.broadcast_command_delivery(retried)
                             continue
 
                         destination = str(pending.get("destination") or "").strip()
