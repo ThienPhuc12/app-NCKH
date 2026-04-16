@@ -26,6 +26,12 @@
   color: #cbd5e1;
 }
 
+.location-set-hint {
+  margin-top: 6px;
+  color: #facc15;
+  font-weight: 600;
+}
+
 .notice-actions {
   display: flex;
   align-items: center;
@@ -293,6 +299,12 @@
   border-radius: 8px;
   padding: 6px 10px;
   cursor: pointer;
+}
+
+.notification-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .notification-tabs {

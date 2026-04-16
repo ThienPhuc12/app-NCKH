@@ -10,6 +10,7 @@ import {
 import { ToastContainer, toast } from 'react-toastify';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import 'react-toastify/dist/ReactToastify.css';
+import SettingsDrawer from './SettingsDrawer';
 import './MapDashboard.css';
 
 const DEFAULT_CENTER = [16.35, 107.5];
@@ -44,6 +45,17 @@ const MAP_STYLE = process.env.REACT_APP_MAP_STYLE_URL || FALLBACK_MAP_STYLE;
 const NOTIFICATION_WINDOW_MS = 60 * 1000;
 const MAX_NOTIFICATIONS = 80;
 const EXCLUDED_NODE_SUFFIXES = new Set(['d4d4']);
+const DEFAULT_DASHBOARD_SETTINGS = {
+  radio: {},
+  lora: {},
+  power: {},
+  display: {},
+  bluetooth: {},
+  position: {},
+  device: {},
+  module: {},
+  connections: {},
+};
 
 function normalizeNodeId(value) {
   const text = String(value || '').trim().toLowerCase();
@@ -202,7 +214,7 @@ function isCommandDelivery(message) {
 function formatLastUpdated(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) {
-    return 'Khong ro';
+    return 'Không rõ';
   }
   return date.toLocaleString('vi-VN');
 }
@@ -214,35 +226,35 @@ function createNodeMarkerClass(node) {
 function formatTimeAgo(timestamp) {
   const diffMs = Date.now() - Number(timestamp || 0);
   if (!Number.isFinite(diffMs) || diffMs < 0) {
-    return 'vua xong';
+    return 'vừa xong';
   }
 
   const seconds = Math.floor(diffMs / 1000);
   if (seconds < 10) {
-    return 'vua xong';
+    return 'vừa xong';
   }
   if (seconds < 60) {
-    return `${seconds}s truoc`;
+    return `${seconds}s trước`;
   }
 
   const minutes = Math.floor(seconds / 60);
   if (minutes < 60) {
-    return `${minutes}p truoc`;
+    return `${minutes}p trước`;
   }
 
   const hours = Math.floor(minutes / 60);
   if (hours < 24) {
-    return `${hours}h truoc`;
+    return `${hours}h trước`;
   }
 
   const days = Math.floor(hours / 24);
-  return `${days}d truoc`;
+  return `${days}d trước`;
 }
 
 function MapDashboard({ gatewayUrl }) {
   const [nodes, setNodes] = useState([]);
   const [selectedNodeId, setSelectedNodeId] = useState('');
-  const [socketState, setSocketState] = useState('Dang ket noi gateway...');
+  const [socketState, setSocketState] = useState('Đang kết nối gateway...');
   const socketRef = useRef(null);
   const mapRef = useRef(null);
   const knownNodeIdsRef = useRef(new Set());
@@ -252,6 +264,12 @@ function MapDashboard({ gatewayUrl }) {
   const [notifications, setNotifications] = useState([]);
   const [notificationFilter, setNotificationFilter] = useState('all');
   const [isNotificationPanelOpen, setIsNotificationPanelOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [socketReady, setSocketReady] = useState(false);
+  const [settingsData, setSettingsData] = useState(DEFAULT_DASHBOARD_SETTINGS);
+  const [fixedLocations, setFixedLocations] = useState({});
+  const [isLocationSetMode, setIsLocationSetMode] = useState(false);
+  const [locationDraft, setLocationDraft] = useState(null);
 
   const activeNodes = useMemo(() => nodes.filter((node) => node.status === 'online'), [nodes]);
   const offlineNodes = useMemo(() => nodes.filter((node) => node.status !== 'online'), [nodes]);
@@ -273,6 +291,22 @@ function MapDashboard({ gatewayUrl }) {
   const selectedNodeHasPosition = Boolean(
     selectedNode && Number.isFinite(selectedNode.lat) && Number.isFinite(selectedNode.lng),
   );
+  const localNode = useMemo(() => nodes.find((node) => node.type === 'gateway') || null, [nodes]);
+  const localFixedLocation = useMemo(() => {
+    if (!localNode?.id) {
+      return null;
+    }
+    return fixedLocations[localNode.id] || null;
+  }, [fixedLocations, localNode]);
+  const localNodePosition = useMemo(() => {
+    if (!localNode || !Number.isFinite(localNode.lat) || !Number.isFinite(localNode.lng)) {
+      return null;
+    }
+    return {
+      lat: localNode.lat,
+      lng: localNode.lng,
+    };
+  }, [localNode]);
 
   const pushNotification = useCallback(({
     dedupeKey,
@@ -340,6 +374,81 @@ function MapDashboard({ gatewayUrl }) {
     }
   }, []);
 
+  const sendGatewayMessage = useCallback((payload) => {
+    const socket = socketRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      pushNotification({
+        dedupeKey: 'gateway-send-unavailable',
+        title: 'Gateway chưa sẵn sàng',
+        detail: 'Không thể gửi lệnh khi WebSocket chưa kết nối.',
+        level: 'critical',
+      });
+      return false;
+    }
+    socket.send(JSON.stringify(payload));
+    return true;
+  }, [pushNotification]);
+
+  const handleLocationAction = useCallback((action) => {
+    if (action === 'beginSet') {
+      const baseline = localFixedLocation || localNodePosition || null;
+      setLocationDraft(
+        baseline && Number.isFinite(Number(baseline.lat)) && Number.isFinite(Number(baseline.lng))
+          ? { lat: Number(baseline.lat), lng: Number(baseline.lng) }
+          : null,
+      );
+      setIsLocationSetMode(true);
+      pushNotification({
+        dedupeKey: 'location-set-mode',
+        title: 'Đang chọn vị trí local node',
+        detail: 'Click lên map để chọn tọa độ, sau đó mở Cài đặt > Location để lưu.',
+        level: 'info',
+      });
+      return;
+    }
+
+    if (action === 'cancelSet') {
+      setIsLocationSetMode(false);
+      setLocationDraft(null);
+      return;
+    }
+
+    if (action === 'save') {
+      if (!localNode?.id || !locationDraft) {
+        pushNotification({
+          dedupeKey: 'location-save-missing',
+          title: 'Chưa có dữ liệu để lưu',
+          detail: 'Cần node local và điểm đã chọn trên map.',
+          level: 'critical',
+          shouldToast: true,
+          toastType: 'warn',
+        });
+        return;
+      }
+      const sent = sendGatewayMessage({
+        type: 'location:set',
+        nodeId: localNode.id,
+        lat: Number(locationDraft.lat),
+        lng: Number(locationDraft.lng),
+        name: localNode.name || localNode.id,
+      });
+      if (sent) {
+        setIsLocationSetMode(false);
+      }
+      return;
+    }
+
+    if (action === 'clear') {
+      if (!localNode?.id) {
+        return;
+      }
+      sendGatewayMessage({
+        type: 'location:clear',
+        nodeId: localNode.id,
+      });
+    }
+  }, [localFixedLocation, localNode, localNodePosition, locationDraft, pushNotification, sendGatewayMessage]);
+
   function markAllNotificationsRead() {
     setNotifications((current) => current.map((item) => ({ ...item, read: true })));
   }
@@ -355,14 +464,17 @@ function MapDashboard({ gatewayUrl }) {
     socketRef.current = socket;
 
     socket.onopen = () => {
-      setSocketState('Da ket noi gateway.py');
+      setSocketState('Đã kết nối gateway.py');
+      setSocketReady(true);
       pushNotification({
         dedupeKey: 'ws-connected',
-        title: 'Gateway da ket noi',
-        detail: 'Kenh WebSocket san sang.',
+        title: 'Gateway đã kết nối',
+        detail: 'Kênh WebSocket sẵn sàng.',
         level: 'info',
       });
       socket.send(JSON.stringify({ type: 'sync' }));
+      socket.send(JSON.stringify({ type: 'settings:get' }));
+      socket.send(JSON.stringify({ type: 'location:get' }));
     };
 
     socket.onmessage = (event) => {
@@ -374,7 +486,7 @@ function MapDashboard({ gatewayUrl }) {
           pushNotification({
             dedupeKey: `gateway-ack-${dest}`,
             title: 'Gateway ACK',
-            detail: `Da gui lenh den ${dest}`,
+            detail: `Đã gửi lệnh đến ${dest}`,
             level: 'info',
           });
           return;
@@ -385,8 +497,8 @@ function MapDashboard({ gatewayUrl }) {
           const reason = parsed.errorReason || 'NONE';
           pushNotification({
             dedupeKey: `mesh-ack-${from}-${reason}`,
-            title: `ACK Mesh tu ${from}`,
-            detail: `Trang thai: ${reason}`,
+            title: `ACK Mesh từ ${from}`,
+            detail: `Trạng thái: ${reason}`,
             level: reason === 'NONE' ? 'info' : 'critical',
             shouldToast: reason !== 'NONE',
             toastType: reason === 'NONE' ? 'info' : 'warn',
@@ -402,7 +514,7 @@ function MapDashboard({ gatewayUrl }) {
             pushNotification({
               dedupeKey: `delivery-ok-${destination}`,
               title: `Delivery OK: ${destination}`,
-              detail: 'Lenh da duoc node tiep nhan.',
+              detail: 'Lệnh đã được node tiếp nhận.',
               level: 'info',
             });
           } else if (status === 'failed') {
@@ -443,9 +555,107 @@ function MapDashboard({ gatewayUrl }) {
           const signal = Number.isFinite(Number(parsed.rxRssi)) ? ` | RSSI ${parsed.rxRssi} dBm` : '';
           pushNotification({
             dedupeKey: `mesh-receive-${from}`,
-            title: text ? `Phan hoi tu ${from}` : `Nhan packet tu ${from}`,
-            detail: text ? `${text}${signal}` : signal || 'Packet khong co text',
+            title: text ? `Phản hồi từ ${from}` : `Nhận packet từ ${from}`,
+            detail: text ? `${text}${signal}` : signal || 'Packet không có text',
             level: 'info',
+          });
+          return;
+        }
+
+        if (parsed?.type === 'SETTINGS_DATA') {
+          setSettingsData({ ...DEFAULT_DASHBOARD_SETTINGS, ...(parsed.settings || {}) });
+          return;
+        }
+
+        if (parsed?.type === 'SETTINGS_UPDATED') {
+          setSettingsData({ ...DEFAULT_DASHBOARD_SETTINGS, ...(parsed.settings || {}) });
+          const hardwareApply = parsed.hardwareApply || {};
+          const appliedCount = Array.isArray(hardwareApply.appliedFields)
+            ? hardwareApply.appliedFields.length
+            : 0;
+          const errorCount = Array.isArray(hardwareApply.errors)
+            ? hardwareApply.errors.length
+            : 0;
+          const unsupportedCount = Array.isArray(hardwareApply.unsupportedFields)
+            ? hardwareApply.unsupportedFields.length
+            : 0;
+
+          let detail = 'Thông số dashboard/gateway đã được lưu.';
+          if (hardwareApply.connected === false) {
+            detail = 'Đã lưu gateway, nhưng chưa ghi xuống thiết bị vì chưa kết nối node local.';
+          } else if (appliedCount > 0 && errorCount === 0) {
+            detail = `Đã ghi ${appliedCount} thông số xuống thiết bị local.`;
+          } else if (appliedCount > 0 && errorCount > 0) {
+            detail = `Ghi một phần: ${appliedCount} thông số OK, ${errorCount} lỗi.`;
+          } else if (errorCount > 0) {
+            detail = `Đã lưu gateway nhưng ghi thiết bị thất bại (${errorCount} lỗi).`;
+          }
+
+          if (unsupportedCount > 0 && appliedCount > 0) {
+            detail += ` ${unsupportedCount} trường chưa hỗ trợ ghi trực tiếp.`;
+          }
+
+          pushNotification({
+            dedupeKey: 'settings-updated',
+            title: 'Đã cập nhật cài đặt',
+            detail,
+            level: errorCount > 0 ? 'critical' : 'info',
+            shouldToast: errorCount > 0,
+            toastType: errorCount > 0 ? 'warn' : 'success',
+          });
+          return;
+        }
+
+        if (parsed?.type === 'FIXED_LOCATIONS_DATA') {
+          setFixedLocations(parsed.locations || {});
+          return;
+        }
+
+        if (parsed?.type === 'FIXED_LOCATION_UPDATED') {
+          if (parsed.location?.nodeId) {
+            setFixedLocations((current) => ({ ...current, [parsed.location.nodeId]: parsed.location }));
+          }
+          setIsLocationSetMode(false);
+          setLocationDraft(null);
+          pushNotification({
+            dedupeKey: 'fixed-location-updated',
+            title: 'Đã lưu vị trí cố định',
+            detail: 'Vị trí local node đã được cập nhật trên gateway.',
+            level: 'info',
+            shouldToast: true,
+            toastType: 'success',
+          });
+          return;
+        }
+
+        if (parsed?.type === 'FIXED_LOCATION_CLEARED') {
+          const nodeId = parsed.nodeId;
+          if (nodeId) {
+            setFixedLocations((current) => {
+              const next = { ...current };
+              delete next[nodeId];
+              return next;
+            });
+          }
+          setIsLocationSetMode(false);
+          setLocationDraft(null);
+          pushNotification({
+            dedupeKey: 'fixed-location-cleared',
+            title: 'Đã xóa vị trí cố định',
+            detail: 'Local node quay lại chế độ không có fixed location.',
+            level: 'info',
+          });
+          return;
+        }
+
+        if (parsed?.type === 'STATUS' && parsed?.status === 'error') {
+          pushNotification({
+            dedupeKey: `gateway-status-error-${String(parsed.message || 'unknown')}`,
+            title: 'Gateway báo lỗi',
+            detail: String(parsed.message || 'Không rõ nguyên nhân'),
+            level: 'critical',
+            shouldToast: true,
+            toastType: 'error',
           });
           return;
         }
@@ -481,7 +691,7 @@ function MapDashboard({ gatewayUrl }) {
             lowBatteryNotifiedRef.current.add(node.id);
             pushNotification({
               dedupeKey: `low-battery-${node.id}`,
-              title: 'Pin yeu duoi 15%',
+              title: 'Pin yếu dưới 15%',
               detail: node.name || node.id,
               level: 'critical',
               shouldToast: true,
@@ -499,7 +709,7 @@ function MapDashboard({ gatewayUrl }) {
           const moreCount = joinedNames.length - 3;
           pushNotification({
             dedupeKey: 'nodes-joined',
-            title: joinedNames.length > 1 ? `${joinedNames.length} tram moi gia nhap` : 'Tram moi gia nhap',
+            title: joinedNames.length > 1 ? `${joinedNames.length} trạm mới gia nhập` : 'Trạm mới gia nhập',
             detail: moreCount > 0 ? `${preview} +${moreCount}` : preview,
             level: 'info',
           });
@@ -512,11 +722,12 @@ function MapDashboard({ gatewayUrl }) {
     };
 
     socket.onerror = () => {
-      setSocketState('Mat ket noi WebSocket. Dang cho gateway.py...');
+      setSocketReady(false);
+      setSocketState('Mất kết nối WebSocket. Đang chờ gateway.py...');
       pushNotification({
         dedupeKey: 'ws-error',
-        title: 'Mat ket noi gateway',
-        detail: 'Dang thu ket noi lai WebSocket.',
+        title: 'Mất kết nối gateway',
+        detail: 'Đang thử kết nối lại WebSocket.',
         level: 'critical',
         shouldToast: true,
         toastType: 'warn',
@@ -524,11 +735,12 @@ function MapDashboard({ gatewayUrl }) {
     };
 
     socket.onclose = () => {
-      setSocketState('WebSocket da dong. Mo lai app de ket noi lai.');
+      setSocketReady(false);
+      setSocketState('WebSocket đã đóng. Mở lại app để kết nối lại.');
       pushNotification({
         dedupeKey: 'ws-closed',
-        title: 'WebSocket da dong',
-        detail: 'Can khoi dong lai app hoac gateway.',
+        title: 'WebSocket đã đóng',
+        detail: 'Cần khởi động lại app hoặc gateway.',
         level: 'critical',
         shouldToast: true,
         toastType: 'error',
@@ -614,8 +826,18 @@ function MapDashboard({ gatewayUrl }) {
         <div>
           <h2>Monitoring System - LoRa Mesh</h2>
           <p>{socketState}</p>
+          {isLocationSetMode && (
+            <p className="location-set-hint">Chế độ set location đang bật: click lên map để chọn điểm cho local node.</p>
+          )}
         </div>
         <div className="notice-actions">
+          <button
+            type="button"
+            className="notice-toggle"
+            onClick={() => setIsSettingsOpen(true)}
+          >
+            Cài đặt
+          </button>
           <button
             type="button"
             className={`notice-toggle ${isNotificationPanelOpen ? 'active' : ''}`}
@@ -629,7 +851,7 @@ function MapDashboard({ gatewayUrl }) {
               });
             }}
           >
-            Thong bao
+            Thông báo
             {unreadCount > 0 && <span className="notice-badge">{unreadCount}</span>}
           </button>
         </div>
@@ -637,22 +859,22 @@ function MapDashboard({ gatewayUrl }) {
 
       <div className="monitor-layout">
         <aside className="node-sidebar">
-          <h3>Node Dang Hoat Dong</h3>
+          <h3>Node Đang Hoạt Động</h3>
 
           {selectedNode && (
             <div className="selected-node-panel">
-              <h4>Thong so node dang chon</h4>
-              <p><strong>Ten:</strong> {selectedNode.name}</p>
+              <h4>Thông số node đang chọn</h4>
+              <p><strong>Tên:</strong> {selectedNode.name}</p>
               <p><strong>ID:</strong> {selectedNode.id}</p>
-              <p><strong>Loai:</strong> {selectedNode.type === 'gateway' ? 'Gateway' : 'Node ngoai'}</p>
-              <p><strong>Trang thai:</strong> {selectedNode.status === 'online' ? 'Online' : 'Offline'}</p>
+              <p><strong>Loại:</strong> {selectedNode.type === 'gateway' ? 'Gateway' : 'Node ngoài'}</p>
+              <p><strong>Trạng thái:</strong> {selectedNode.status === 'online' ? 'Online' : 'Offline'}</p>
               <p><strong>Pin:</strong> {Number.isFinite(selectedNode.battery) ? `${selectedNode.battery}%` : 'N/A'}</p>
-              <p><strong>Tin hieu:</strong> {Number.isFinite(selectedNode.rssi) ? `${selectedNode.rssi} dBm` : 'N/A'}</p>
+              <p><strong>Tín hiệu:</strong> {Number.isFinite(selectedNode.rssi) ? `${selectedNode.rssi} dBm` : 'N/A'}</p>
               <p><strong>Last seen:</strong> {selectedNode.lastSeen || formatLastUpdated(selectedNode.lastUpdated)}</p>
             </div>
           )}
 
-          {activeNodes.length === 0 && <p className="empty-side">Chua co node online.</p>}
+          {activeNodes.length === 0 && <p className="empty-side">Chưa có node online.</p>}
 
           {activeNodes.map((node) => {
             const batteryClass = getBatteryClass(node.battery);
@@ -674,15 +896,15 @@ function MapDashboard({ gatewayUrl }) {
                 </div>
                 <div className="node-row-foot">
                   <span>Pin: {Number.isFinite(node.battery) ? `${node.battery}%` : 'N/A'}</span>
-                  <span>Tin hieu: {Number.isFinite(node.rssi) ? `${node.rssi} dBm` : 'N/A'}</span>
+                  <span>Tín hiệu: {Number.isFinite(node.rssi) ? `${node.rssi} dBm` : 'N/A'}</span>
                   <span>Last seen: {node.lastSeen || formatLastUpdated(node.lastUpdated)}</span>
                 </div>
               </button>
             );
           })}
 
-          <h3 className="offline-title">Node Da Mat Ket Noi</h3>
-          {offlineNodes.length === 0 && <p className="empty-side">Khong co node offline.</p>}
+          <h3 className="offline-title">Node Đã Mất Kết Nối</h3>
+          {offlineNodes.length === 0 && <p className="empty-side">Không có node offline.</p>}
           {offlineNodes.map((node) => {
             const batteryClass = getBatteryClass(node.battery);
             const batteryValue = Number.isFinite(node.battery) ? Math.max(0, Math.min(100, node.battery)) : 0;
@@ -703,7 +925,7 @@ function MapDashboard({ gatewayUrl }) {
                 </div>
                 <div className="node-row-foot">
                   <span>Pin: {Number.isFinite(node.battery) ? `${node.battery}%` : 'N/A'}</span>
-                  <span>Tin hieu: {Number.isFinite(node.rssi) ? `${node.rssi} dBm` : 'N/A'}</span>
+                  <span>Tín hiệu: {Number.isFinite(node.rssi) ? `${node.rssi} dBm` : 'N/A'}</span>
                   <span>Last seen: {node.lastSeen || formatLastUpdated(node.lastUpdated)}</span>
                 </div>
               </button>
@@ -726,7 +948,16 @@ function MapDashboard({ gatewayUrl }) {
             maxPitch={0}
             dragRotate={false}
             touchZoomRotate={false}
-            onClick={() => {
+            onClick={(event) => {
+              if (isLocationSetMode) {
+                const clickedLat = Number(event.lngLat?.lat);
+                const clickedLng = Number(event.lngLat?.lng);
+                if (Number.isFinite(clickedLat) && Number.isFinite(clickedLng)) {
+                  setLocationDraft({ lat: clickedLat, lng: clickedLng });
+                }
+                return;
+              }
+
               if (!selectedNodeHasPosition && mapNodes.length > 0) {
                 setSelectedNodeId(mapNodes[0].id);
               }
@@ -765,11 +996,11 @@ function MapDashboard({ gatewayUrl }) {
                 <div className="popup-content">
                   <h3>{selectedNode.name}</h3>
                   <p>ID: {selectedNode.id}</p>
-                  <p>Loai tram: {selectedNode.type === 'gateway' ? 'Tram dieu hanh' : 'Tram coi hu'}</p>
+                  <p>Loại trạm: {selectedNode.type === 'gateway' ? 'Trạm điều hành' : 'Trạm còi hú'}</p>
                   <p className="rssi-line">
                     <SignalIcon rssi={selectedNode.rssi} /> RSSI: {Number.isFinite(selectedNode.rssi) ? `${selectedNode.rssi} dBm` : 'N/A'}
                   </p>
-                  <p>Pin: {Number.isFinite(selectedNode.battery) ? `${selectedNode.battery}%` : 'Chua co du lieu'}</p>
+                  <p>Pin: {Number.isFinite(selectedNode.battery) ? `${selectedNode.battery}%` : 'Chưa có dữ liệu'}</p>
                   <p>Last seen: {selectedNode.lastSeen || formatLastUpdated(selectedNode.lastUpdated)}</p>
                 </div>
               </Popup>
@@ -780,7 +1011,7 @@ function MapDashboard({ gatewayUrl }) {
 
       {nodes.length === 0 && (
         <p className="empty-note">
-          Chua nhan duoc node nao tu gateway.py. Ban do se cap nhat ngay khi co du lieu that.
+          Chưa nhận được node nào từ gateway.py. Bản đồ sẽ cập nhật ngay khi có dữ liệu thật.
         </p>
       )}
 
@@ -794,14 +1025,17 @@ function MapDashboard({ gatewayUrl }) {
       <aside className={`notification-panel ${isNotificationPanelOpen ? 'open' : ''}`}>
         <div className="notification-head">
           <h3>Notification Center</h3>
-          <button type="button" onClick={markAllNotificationsRead}>Doc tat ca</button>
+          <div className="notification-head-actions">
+            <button type="button" onClick={markAllNotificationsRead}>Đọc tất cả</button>
+            <button type="button" onClick={() => setIsNotificationPanelOpen(false)}>Đóng</button>
+          </div>
         </div>
 
         <div className="notification-tabs">
           {[
-            { id: 'all', label: 'Tat ca' },
-            { id: 'critical', label: 'Canh bao' },
-            { id: 'info', label: 'Thong tin' },
+            { id: 'all', label: 'Tất cả' },
+            { id: 'critical', label: 'Cảnh báo' },
+            { id: 'info', label: 'Thông tin' },
           ].map((tab) => (
             <button
               key={tab.id}
@@ -815,7 +1049,7 @@ function MapDashboard({ gatewayUrl }) {
         </div>
 
         <div className="notification-list">
-          {filteredNotifications.length === 0 && <p className="notification-empty">Chua co thong bao.</p>}
+          {filteredNotifications.length === 0 && <p className="notification-empty">Chưa có thông báo.</p>}
           {filteredNotifications.map((item) => (
             <button
               key={item.id}
@@ -828,11 +1062,34 @@ function MapDashboard({ gatewayUrl }) {
                 <span>{formatTimeAgo(item.lastSeenAt)}</span>
               </div>
               <p>{item.detail}</p>
-              {item.count > 1 && <small>Lap lai {item.count} lan</small>}
+              {item.count > 1 && <small>Lặp lại {item.count} lần</small>}
             </button>
           ))}
         </div>
       </aside>
+
+      <SettingsDrawer
+        open={isSettingsOpen}
+        settings={settingsData}
+        locationState={{
+          socketReady,
+          localNodeName: localNode?.name || '',
+          localNodeId: localNode?.id || '',
+          localNodeStatus: localNode?.status || '',
+          localNodePosition,
+          localFixedLocation,
+          locationDraft,
+          isLocationSetMode,
+        }}
+        onLocationAction={handleLocationAction}
+        onClose={() => setIsSettingsOpen(false)}
+        onSave={(nextSettings) => {
+          sendGatewayMessage({ type: 'settings:set', settings: nextSettings });
+        }}
+        onReset={() => {
+          sendGatewayMessage({ type: 'settings:reset' });
+        }}
+      />
 
       <ToastContainer
         position="top-right"

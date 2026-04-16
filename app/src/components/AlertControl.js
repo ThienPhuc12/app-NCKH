@@ -39,10 +39,10 @@ function createRequestId() {
 function ackVisual(status) {
   const normalized = String(status || '').toLowerCase();
   if (normalized === 'delivered') {
-    return { icon: '☁✓', label: 'DA NHAN', className: 'delivery delivered' };
+    return { icon: '☁✓', label: 'ĐÃ NHẬN', className: 'delivery delivered' };
   }
   if (normalized === 'pending') {
-    return { icon: '☁…', label: 'DANG GUI/CHO ACK', className: 'delivery pending' };
+    return { icon: '☁…', label: 'ĐANG GỬI/CHỜ ACK', className: 'delivery pending' };
   }
   if (normalized === 'failed') {
     return { icon: '☁!', label: 'THAT BAI', className: 'delivery failed' };
@@ -98,13 +98,13 @@ function sortNodes(nodes) {
 function AlertControl({ gatewayUrl }) {
   const [targetId, setTargetId] = useState('^all');
   const [messageText, setMessageText] = useState('BAODONG');
-  const [status, setStatus] = useState('San sang');
-  const [lastResponse, setLastResponse] = useState('Chua co phan hoi');
+  const [status, setStatus] = useState('Sẵn sàng');
+  const [lastResponse, setLastResponse] = useState('Chưa có phản hồi');
   const [currentRequestId, setCurrentRequestId] = useState('');
   const [currentPacketId, setCurrentPacketId] = useState(null);
   const [deliveryByNode, setDeliveryByNode] = useState({});
   const [availableNodes, setAvailableNodes] = useState([]);
-  const [connectionState, setConnectionState] = useState('Dang ket noi gateway...');
+  const [connectionState, setConnectionState] = useState('Đang kết nối gateway...');
   const [isConnected, setIsConnected] = useState(false);
 
   const socketRef = useRef(null);
@@ -140,7 +140,7 @@ function AlertControl({ gatewayUrl }) {
 
   const selectedTargetLabel = useMemo(() => {
     if (targetId === '^all') {
-      return 'Tat ca node (bao gom ca node offline)';
+      return 'Tất cả node (bao gồm cả node offline)';
     }
     return selectedNode ? `${selectedNode.name} (${selectedNode.id})` : targetId;
   }, [selectedNode, targetId]);
@@ -154,7 +154,7 @@ function AlertControl({ gatewayUrl }) {
     socketRef.current = socket;
 
     socket.onopen = () => {
-      setConnectionState('Da ket noi gateway');
+      setConnectionState('Đã kết nối gateway');
       setIsConnected(true);
       socket.send(JSON.stringify({ type: 'GET_PORTS' }));
       socket.send(JSON.stringify({ type: 'sync' }));
@@ -169,8 +169,8 @@ function AlertControl({ gatewayUrl }) {
             setIsConnected(parsed.status === 'connected');
             setConnectionState(
               parsed.status === 'connected'
-                ? `Da ket noi gateway: ${parsed.port || 'USB'}`
-                : 'Dang tim gateway / cong COM... ',
+                ? `Đã kết nối gateway: ${parsed.port || 'USB'}`
+                : 'Đang tìm gateway / cổng COM... ',
             );
           }
           return;
@@ -179,10 +179,10 @@ function AlertControl({ gatewayUrl }) {
         if (parsed.type === 'CONNECTION_STATUS') {
           if (parsed.status === 'connected') {
             setIsConnected(true);
-            setConnectionState(`Da ket noi gateway: ${parsed.port || 'USB'}`);
+            setConnectionState(`Đã kết nối gateway: ${parsed.port || 'USB'}`);
           } else if (parsed.status === 'scanning') {
             setIsConnected(false);
-            setConnectionState('Dang tim cong COM...');
+            setConnectionState('Đang tìm cổng COM...');
           }
           return;
         }
@@ -220,7 +220,7 @@ function AlertControl({ gatewayUrl }) {
 
           setCurrentPacketId(parsed.packetId ?? null);
           currentPacketIdRef.current = parsed.packetId ?? null;
-          setStatus(`Gateway ACK: da gui den ${parsed.destination || 'unknown'}. Dang cho ACK delivery...`);
+          setStatus(`Gateway ACK: đã gửi đến ${parsed.destination || 'unknown'}. Đang chờ ACK delivery...`);
           if (parsed.destination && parsed.destination !== '^all') {
             setDeliveryByNode((prev) => ({
               ...prev,
@@ -248,7 +248,7 @@ function AlertControl({ gatewayUrl }) {
 
           setCurrentPacketId(parsed.packetId ?? null);
           currentPacketIdRef.current = parsed.packetId ?? null;
-          setStatus('Gui lenh thanh cong (ACK gateway da nhan), dang cho phan hoi node...');
+          setStatus('Gửi lệnh thành công (ACK gateway đã nhận), đang chờ phản hồi node...');
           setLastResponse(JSON.stringify(parsed, null, 2));
           return;
         }
@@ -259,7 +259,7 @@ function AlertControl({ gatewayUrl }) {
           }
           const fromId = parsed.fromId || 'unknown';
           const reason = parsed.errorReason || 'NONE';
-          setStatus(`Mesh ACK tu ${fromId} (status: ${reason})`);
+          setStatus(`Mesh ACK từ ${fromId} (status: ${reason})`);
           setLastResponse(JSON.stringify(parsed, null, 2));
           return;
         }
@@ -294,9 +294,9 @@ function AlertControl({ gatewayUrl }) {
           }));
 
           if (deliveryStatus === 'DELIVERED') {
-            setStatus(`ACK DELIVERY: DEN NOI ${destination}`);
+            setStatus(`ACK DELIVERY: ĐẾN NƠI ${destination}`);
           } else if (deliveryStatus === 'FAILED') {
-            setStatus(`ACK DELIVERY: THAT BAI (${reason})`);
+            setStatus(`ACK DELIVERY: THẤT BẠI (${reason})`);
           } else if (deliveryStatus === 'MISSED') {
             setStatus(`ACK DELIVERY: MISS/TIMEOUT (${reason})`);
           } else {
@@ -328,7 +328,7 @@ function AlertControl({ gatewayUrl }) {
           });
           setDeliveryByNode((prev) => ({ ...prev, ...pendingMap }));
           if (parsed.fanout) {
-            setStatus(`Fan-out: da gui ${sent}/${attempted} node (that bai gui: ${failed}). Dang cho ACK delivery...`);
+            setStatus(`Fan-out: đã gửi ${sent}/${attempted} node (thất bại gửi: ${failed}). Đang chờ ACK delivery...`);
           }
           setLastResponse(JSON.stringify(parsed, null, 2));
           return;
@@ -358,13 +358,13 @@ function AlertControl({ gatewayUrl }) {
             clearTimeout(sendTimeoutRef.current);
             sendTimeoutRef.current = null;
           }
-          setStatus(text ? `Nhan phan hoi tu ${fromId}: ${text}` : `Nhan packet phan hoi tu ${fromId}`);
+          setStatus(text ? `Nhận phản hồi từ ${fromId}: ${text}` : `Nhận packet phản hồi từ ${fromId}`);
           setLastResponse(JSON.stringify(parsed, null, 2));
           return;
         }
 
         if (parsed.type === 'error' || (parsed.type === 'STATUS' && parsed.status === 'error')) {
-          setStatus(`Gateway bao loi: ${parsed.error || parsed.message || 'Khong ro'}`);
+          setStatus(`Gateway báo lỗi: ${parsed.error || parsed.message || 'Không rõ'}`);
           setLastResponse(JSON.stringify(parsed, null, 2));
           setIsConnected(false);
           if (sendTimeoutRef.current) {
@@ -379,13 +379,13 @@ function AlertControl({ gatewayUrl }) {
 
     socket.onerror = () => {
       setIsConnected(false);
-      setConnectionState('Khong ket noi duoc gateway.py');
-      setStatus('Khong ket noi duoc gateway.py');
+      setConnectionState('Không kết nối được gateway.py');
+      setStatus('Không kết nối được gateway.py');
     };
 
     socket.onclose = () => {
       setIsConnected(false);
-      setConnectionState('WebSocket da dong. Mo lai app de ket noi lai.');
+      setConnectionState('WebSocket đã đóng. Mở lại app để kết nối lại.');
     };
 
     return () => {
@@ -403,7 +403,7 @@ function AlertControl({ gatewayUrl }) {
 
   useEffect(() => {
     if (targetId !== '^all' && selectedNode) {
-      setStatus(`Dang chon node: ${selectedNode.name} (${selectedNode.id})`);
+      setStatus(`Đang chọn node: ${selectedNode.name} (${selectedNode.id})`);
     }
   }, [selectedNode, targetId]);
 
@@ -424,12 +424,12 @@ function AlertControl({ gatewayUrl }) {
   const handleSend = () => {
     const socket = socketRef.current;
     if (!socket || socket.readyState !== WebSocket.OPEN) {
-      setStatus('Gateway chua san sang');
+      setStatus('Gateway chưa sẵn sàng');
       return;
     }
 
     if (!targetId.trim()) {
-      setStatus('Hay chon node dich hoac broadcast');
+      setStatus('Hãy chọn node đích hoặc broadcast');
       return;
     }
 
@@ -439,8 +439,8 @@ function AlertControl({ gatewayUrl }) {
     setCurrentPacketId(null);
     currentPacketIdRef.current = null;
     setDeliveryByNode({});
-    setStatus('Dang ket noi gateway...');
-    setLastResponse('Dang gui lenh...');
+    setStatus('Đang kết nối gateway...');
+    setLastResponse('Đang gửi lệnh...');
 
     const payload = {
       version: '1.0',
@@ -456,13 +456,13 @@ function AlertControl({ gatewayUrl }) {
     };
 
     socket.send(JSON.stringify(payload));
-    setStatus('Da day lenh len gateway, dang cho ACK...');
+    setStatus('Đã đẩy lệnh lên gateway, đang chờ ACK...');
 
     if (sendTimeoutRef.current) {
       clearTimeout(sendTimeoutRef.current);
     }
     sendTimeoutRef.current = setTimeout(() => {
-      setStatus('Khong nhan phan hoi tu gateway (timeout)');
+      setStatus('Không nhận phản hồi từ gateway (timeout)');
     }, ACK_TIMEOUT_MS);
   };
 
@@ -478,7 +478,7 @@ function AlertControl({ gatewayUrl }) {
               ? `${gatewayNode.name} (${gatewayNode.id}) | Pin ${
                   Number.isFinite(gatewayNode.battery) ? `${gatewayNode.battery}%` : 'N/A'
                 }`
-              : 'Chua nhan duoc thong tin node gateway'}
+              : 'Chưa nhận được thông tin node gateway'}
           </p>
         </div>
         <button type="button" className={`gateway-pill ${isConnected ? 'connected' : 'disconnected'}`}>
@@ -489,15 +489,15 @@ function AlertControl({ gatewayUrl }) {
       <div className="node-picker-panel">
         <div className="node-picker-header">
           <div>
-            <strong>Danh sach node da ket noi (khong gom gateway)</strong>
-            <p>Chon node de gui DM, hoac chon tat ca de broadcast.</p>
+            <strong>Danh sách node đã kết nối (không gồm gateway)</strong>
+            <p>Chọn node để gửi DM, hoặc chọn tất cả để broadcast.</p>
           </div>
           <button
             type="button"
             className={`node-chip broadcast ${targetId === '^all' ? 'active' : ''}`}
             onClick={() => handleSelectNode('^all')}
           >
-            Tat ca
+            Tất cả
           </button>
         </div>
 
@@ -528,41 +528,41 @@ function AlertControl({ gatewayUrl }) {
       </div>
 
       <div className="field-group">
-        <label htmlFor="targetId">Node dich</label>
+        <label htmlFor="targetId">Node đích</label>
         <input
           id="targetId"
           value={targetId}
           onChange={(event) => setTargetId(event.target.value)}
-          placeholder="Vi du: ^all hoac !e3f9a120"
+          placeholder="Ví dụ: ^all hoặc !e3f9a120"
         />
-        <small>Chon node trong danh sach ben tren hoac nhap ID khac neu can.</small>
+        <small>Chọn node trong danh sách bên trên hoặc nhập ID khác nếu cần.</small>
       </div>
 
       <div className="field-group">
-        <label htmlFor="messageText">Noi dung canh bao</label>
+        <label htmlFor="messageText">Nội dung cảnh báo</label>
         <input
           id="messageText"
           value={messageText}
           onChange={(event) => setMessageText(event.target.value)}
-          placeholder="Vi du: BAODONG"
+          placeholder="Ví dụ: BAODONG"
         />
       </div>
 
       <button type="button" className="send-alert-btn" onClick={handleSend}>
-        PHAT LENH
+        PHÁT LỆNH
       </button>
 
-      <p className="status-line">Trang thai: {status}</p>
+      <p className="status-line">Trạng thái: {status}</p>
       {currentRequestId && <p className="status-line">Request ID: {currentRequestId}</p>}
       {currentPacketId != null && <p className="status-line">Packet ID: {currentPacketId}</p>}
       {targetId.trim().toLowerCase() === '^all' && (
         <p className="status-line">
-          Dang dung fan-out theo tat ca node (online/offline) de theo doi ACK delivery theo tung node.
+          Đang dùng fan-out theo tất cả node (online/offline) để theo dõi ACK delivery theo từng node.
         </p>
       )}
       {Object.keys(deliveryByNode).length > 0 && (
         <div className="status-line delivery-panel">
-          <strong>Node da nhan/trang thai delivery:</strong>
+          <strong>Node đã nhận/trạng thái delivery:</strong>
           <ul className="delivery-list">
             {Object.values(deliveryByNode).map((item) => (
               <li key={item.nodeId} className="delivery-item">

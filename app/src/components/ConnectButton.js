@@ -246,7 +246,7 @@ function ConnectButton({ gatewayUrl }) {
     socket.onerror = (error) => {
       console.error('[ConnectButton] WebSocket error:', error);
       setConnectionStatus('error');
-      setErrorMessage('Khong ket noi duoc gateway USB. Hay dam bao engine/gateway.py dang chay va ws://127.0.0.1:8765 mo.');
+      setErrorMessage('Không kết nối được gateway USB. Hãy đảm bảo engine/gateway.py đang chạy và ws://127.0.0.1:8765 mở.');
     };
 
     socket.onclose = () => {

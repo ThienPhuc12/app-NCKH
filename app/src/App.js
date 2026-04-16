@@ -13,8 +13,8 @@ function App() {
       <div className="logo-container">
         <img src={process.env.PUBLIC_URL + '/logo app.png'} alt="NHOM5 Logo" className="app-logo" />
       </div>
-      <h1>He thong Canh bao Lu DUT</h1>
-      <p>Chon chuc nang de van hanh he thong LoRa Mesh.</p>
+      <h1>Hệ thống Cảnh báo lũ DUT</h1>
+      <p>Chọn chức năng để vận hành hệ thống LoRa Mesh.</p>
 
       <div className="connection-status">
         <ConnectButton gatewayUrl={gatewayUrl} />
@@ -22,13 +22,13 @@ function App() {
 
       <div className="choice-grid">
         <button type="button" className="choice-card" onClick={() => setView('alert')}>
-          <h2>Truyen tin canh bao</h2>
-          <span>Gui lenh BAODONG va thong diep khan cap den cac tram.</span>
+          <h2>Truyền tin cảnh báo</h2>
+          <span>Gửi lệnh BAODONG và thông điệp khẩn cấp đến các trạm.</span>
         </button>
 
         <button type="button" className="choice-card" onClick={() => setView('map')}>
-          <h2>Xem map giam sat</h2>
-          <span>Theo doi trang thai node realtime tren ban do.</span>
+          <h2>Xem bản đồ giám sát</h2>
+          <span>Theo dõi trạng thái node realtime trên bản đồ.</span>
         </button>
       </div>
     </main>
@@ -37,7 +37,7 @@ function App() {
   const renderHeader = (title) => (
     <header className="view-header">
       <button type="button" className="back-btn" onClick={() => setView('home')}>
-        Quay lai
+        Quay lại
       </button>
       <h2>{title}</h2>
     </header>
@@ -48,7 +48,7 @@ function App() {
       {view === 'home' && renderHome()}
       {view === 'alert' && (
         <>
-          {renderHeader('Truyen tin canh bao')}
+          {renderHeader('Truyền tin cảnh báo')}
           <AlertControl gatewayUrl={gatewayUrl} />
         </>
       )}

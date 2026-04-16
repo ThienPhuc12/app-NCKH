@@ -1,9 +1,11 @@
 import asyncio
+import copy
 import json
 import logging
 import os
 import re
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,7 +22,7 @@ from meshtastic.serial_interface import SerialInterface
 
 HOST = "127.0.0.1"
 PORT = 8765
-OFFLINE_TIMEOUT_SECONDS = int(os.getenv("MESH_NODE_OFFLINE_TIMEOUT", "30"))
+ONLINE_WINDOW_SECONDS = int(os.getenv("MESH_NODE_ONLINE_WINDOW", os.getenv("MESH_NODE_OFFLINE_TIMEOUT", "7200")))
 ACK_TIMEOUT_SECONDS = int(os.getenv("MESH_ACK_TIMEOUT", "18"))
 FANOUT_RETRY_COUNT = int(os.getenv("MESH_FANOUT_RETRIES", "1"))
 FANOUT_SEND_GAP_SECONDS = float(os.getenv("MESH_FANOUT_SEND_GAP_SECONDS", "0.2"))
@@ -31,6 +33,190 @@ EXCLUDED_NODE_IDS = {
 }
 EXCLUDED_NODE_SUFFIXES = {
     "d4d4",
+}
+
+SETTINGS_STORAGE_FILE = "dashboard-settings.json"
+NODE_LOCATION_STORAGE_FILE = "dashboard-node-locations.json"
+DEFAULT_SETTINGS: dict[str, Any] = {
+    "radio": {
+        "snrGoodDb": -7,
+        "snrFairDb": -15,
+        "rssiGoodDbm": -115,
+        "rssiFairDbm": -126,
+        "usePreset": True,
+        "modemPreset": "LONG_FAST",
+        "tracePortnum": 70,
+        "routeDashMs": 700,
+        "autoReconnect": True,
+    },
+    "lora": {
+        "region": "US",
+        "hopLimit": 7,
+        "channelNum": 0,
+        "ignoreMqtt": False,
+        "configOkToMqtt": False,
+        "usePreset": True,
+        "modemPreset": "LONG_FAST",
+        "bandwidth": 250,
+        "spreadFactor": 11,
+        "codingRate": 7,
+        "txEnabled": True,
+        "txPower": 17,
+        "overrideDutyCycle": False,
+        "frequencyOffset": 0,
+        "sx126xRxBoostedGain": False,
+        "overrideFrequency": 0,
+    },
+    "power": {
+        "isPowerSaving": False,
+        "onBatteryShutdownAfterSecs": 0,
+        "adcMultiplierOverride": 0,
+        "waitBluetoothSecs": 0,
+        "deviceBatteryInaAddress": 0,
+        "sdsSecs": 0,
+        "lsSecs": 0,
+        "minWakeSecs": 0,
+    },
+    "display": {
+        "screenOnSecs": 30,
+        "gpsFormat": "UNUSED",
+        "autoScreenCarouselSecs": 0,
+        "compassNorthTop": True,
+        "use12hClock": False,
+        "flipScreen": False,
+        "units": "METRIC",
+        "oled": "OLED_AUTO",
+        "displaymode": "DEFAULT",
+        "headingBold": False,
+        "wakeOnTapOrMotion": False,
+    },
+    "bluetooth": {
+        "enabled": True,
+        "mode": "RANDOM_PIN",
+        "fixedPin": 0,
+    },
+    "position": {
+        "positionBroadcastSmartEnabled": True,
+        "gpsMode": "ENABLED",
+        "fixedPosition": False,
+        "positionBroadcastSecs": 0,
+        "gpsUpdateInterval": 0,
+        "gpsAttemptTime": 0,
+        "broadcastSmartMinimumDistance": 0,
+        "broadcastSmartMinimumIntervalSecs": 0,
+        "positionFlags": 0,
+        "rxGpio": 0,
+        "txGpio": 0,
+        "gpsEnGpio": 0,
+    },
+    "device": {
+        "theme": "midnight",
+        "language": "vi",
+        "density": "comfortable",
+        "role": "CLIENT",
+        "serialEnabled": True,
+        "buttonGpio": 0,
+        "buzzerGpio": 0,
+        "rebroadcastMode": "ALL",
+        "nodeInfoBroadcastSecs": 0,
+        "doubleTapAsButtonPress": False,
+        "isManaged": False,
+        "disableTripleClick": False,
+        "tzdef": "",
+        "ledHeartbeatDisabled": False,
+        "buzzerMode": "ALL_ENABLED",
+        "showOfflineNodes": False,
+        "rememberSelectedNode": True,
+        "fitBoundsOnStart": True,
+    },
+    "module": {
+        "showNotifications": True,
+        "showTraceOverlayOnStart": False,
+        "showConnectionCard": True,
+        "lowBatteryThreshold": 15,
+        "notificationRetention": 80,
+        "nodeBlackListSuffixes": "d4d4",
+    },
+    "connections": {
+        "gatewayUrl": f"ws://{HOST}:{PORT}",
+        "autoScanIntervalSec": 5,
+        "reconnectTimeoutSec": 6,
+        "manualConnectHoldMs": 3000,
+    },
+}
+
+# UI fields that can be mapped to real Meshtastic local config writes.
+# Values: (protobuf field name, expected value type)
+HARDWARE_APPLY_FIELD_MAP: dict[str, dict[str, tuple[str, str]]] = {
+    "lora": {
+        "region": ("region", "enum"),
+        "hopLimit": ("hop_limit", "int"),
+        "ignoreMqtt": ("ignore_mqtt", "bool"),
+        "configOkToMqtt": ("config_ok_to_mqtt", "bool"),
+        "modemPreset": ("modem_preset", "enum"),
+        "bandwidth": ("bandwidth", "int"),
+        "spreadFactor": ("spread_factor", "int"),
+        "codingRate": ("coding_rate", "int"),
+        "txEnabled": ("tx_enabled", "bool"),
+        "txPower": ("tx_power", "int"),
+        "overrideDutyCycle": ("override_duty_cycle", "bool"),
+        "sx126xRxBoostedGain": ("sx126x_rx_boosted_gain", "bool"),
+    },
+    "power": {
+        "isPowerSaving": ("is_power_saving", "bool"),
+        "onBatteryShutdownAfterSecs": ("on_battery_shutdown_after_secs", "int"),
+        "adcMultiplierOverride": ("adc_multiplier_override", "float"),
+        "waitBluetoothSecs": ("wait_bluetooth_secs", "int"),
+        "deviceBatteryInaAddress": ("device_battery_ina_address", "int"),
+        "sdsSecs": ("sds_secs", "int"),
+        "lsSecs": ("ls_secs", "int"),
+        "minWakeSecs": ("min_wake_secs", "int"),
+    },
+    "display": {
+        "screenOnSecs": ("screen_on_secs", "int"),
+        "gpsFormat": ("gps_format", "enum"),
+        "autoScreenCarouselSecs": ("auto_screen_carousel_secs", "int"),
+        "compassNorthTop": ("compass_north_top", "bool"),
+        "use12hClock": ("use_12h_clock", "bool"),
+        "flipScreen": ("flip_screen", "bool"),
+        "units": ("units", "enum"),
+        "oled": ("oled", "enum"),
+        "displaymode": ("displaymode", "enum"),
+        "headingBold": ("heading_bold", "bool"),
+        "wakeOnTapOrMotion": ("wake_on_tap_or_motion", "bool"),
+    },
+    "bluetooth": {
+        "enabled": ("enabled", "bool"),
+        "mode": ("mode", "enum"),
+        "fixedPin": ("fixed_pin", "int"),
+    },
+    "position": {
+        "positionBroadcastSmartEnabled": ("position_broadcast_smart_enabled", "bool"),
+        "gpsMode": ("gps_mode", "enum"),
+        "positionBroadcastSecs": ("position_broadcast_secs", "int"),
+        "gpsUpdateInterval": ("gps_update_interval", "int"),
+        "gpsAttemptTime": ("gps_attempt_time", "int"),
+        "broadcastSmartMinimumDistance": ("broadcast_smart_minimum_distance", "int"),
+        "broadcastSmartMinimumIntervalSecs": ("broadcast_smart_minimum_interval_secs", "int"),
+        "positionFlags": ("position_flags", "int"),
+        "rxGpio": ("rx_gpio", "int"),
+        "txGpio": ("tx_gpio", "int"),
+        "gpsEnGpio": ("gps_en_gpio", "int"),
+    },
+    "device": {
+        "role": ("role", "enum"),
+        "serialEnabled": ("serial_enabled", "bool"),
+        "buttonGpio": ("button_gpio", "int"),
+        "buzzerGpio": ("buzzer_gpio", "int"),
+        "rebroadcastMode": ("rebroadcast_mode", "enum"),
+        "nodeInfoBroadcastSecs": ("node_info_broadcast_secs", "int"),
+        "doubleTapAsButtonPress": ("double_tap_as_button_press", "bool"),
+        "isManaged": ("is_managed", "bool"),
+        "disableTripleClick": ("disable_triple_click", "bool"),
+        "tzdef": ("tzdef", "str"),
+        "ledHeartbeatDisabled": ("led_heartbeat_disabled", "bool"),
+        "buzzerMode": ("buzzer_mode", "enum"),
+    },
 }
 
 
@@ -67,6 +253,10 @@ class MeshtasticGateway:
         self._subscribed = False
         self.pending_commands: dict[int, dict[str, Any]] = {}
         self.node_activity: dict[str, float] = {}
+        self.settings = copy.deepcopy(DEFAULT_SETTINGS)
+        self.settings_file = self._resolve_storage_file(SETTINGS_STORAGE_FILE)
+        self.node_locations_file = self._resolve_storage_file(NODE_LOCATION_STORAGE_FILE)
+        self.node_locations: dict[str, dict[str, Any]] = {}
 
         self._cb_node_updated = self._on_node_updated
         self._cb_connection_established = self._on_connection_established
@@ -74,6 +264,8 @@ class MeshtasticGateway:
         self._cb_receive = self._on_receive_packet
 
         self._load_firmware_board_signatures()
+        self._load_settings_from_disk()
+        self._load_node_locations_from_disk()
 
     @staticmethod
     def _timestamp_from_iso(value: Any) -> Optional[float]:
@@ -174,6 +366,354 @@ class MeshtasticGateway:
             len(self.known_tokens),
         )
 
+    @staticmethod
+    def _resolve_storage_file(file_name: str) -> Path:
+        app_data = os.getenv("APPDATA")
+        if app_data:
+            target_dir = Path(app_data) / "WebDashboardNCKH"
+        else:
+            target_dir = Path.home() / ".web-dashboard-nckh"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        return target_dir / file_name
+
+    @staticmethod
+    def _copy_settings(settings: dict[str, Any]) -> dict[str, Any]:
+        return copy.deepcopy(settings)
+
+    @staticmethod
+    def _merge_settings(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
+        merged = copy.deepcopy(base)
+        for section, values in (patch or {}).items():
+            if section not in merged or not isinstance(values, dict):
+                continue
+            merged[section].update(values)
+        return merged
+
+    def _sanitize_settings(self, candidate: dict[str, Any]) -> dict[str, Any]:
+        return self._merge_settings(DEFAULT_SETTINGS, candidate)
+
+    def _load_settings_from_disk(self) -> None:
+        try:
+            if self.settings_file.exists():
+                loaded = json.loads(self.settings_file.read_text(encoding="utf-8"))
+                self.settings = self._sanitize_settings(loaded if isinstance(loaded, dict) else {})
+            else:
+                self.settings = self._copy_settings(DEFAULT_SETTINGS)
+                self._save_settings_to_disk()
+        except Exception as exc:
+            logging.warning("Failed to load settings from %s: %s", self.settings_file, exc)
+            self.settings = self._copy_settings(DEFAULT_SETTINGS)
+
+    def _save_settings_to_disk(self) -> None:
+        try:
+            self.settings_file.write_text(json.dumps(self.settings, ensure_ascii=True, indent=2), encoding="utf-8")
+        except Exception as exc:
+            logging.warning("Failed to persist settings to %s: %s", self.settings_file, exc)
+
+    def get_settings_payload(self) -> dict[str, Any]:
+        return {
+            "type": "SETTINGS_DATA",
+            "settings": self._copy_settings(self.settings),
+            "savedAt": self._iso_from_timestamp(datetime.now(timezone.utc).timestamp()),
+            "source": str(self.settings_file),
+        }
+
+    @staticmethod
+    def _coerce_hardware_value(value: Any, expected_type: str) -> Any:
+        if expected_type == "bool":
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, str):
+                lowered = value.strip().lower()
+                if lowered in {"1", "true", "yes", "on"}:
+                    return True
+                if lowered in {"0", "false", "no", "off", ""}:
+                    return False
+            return bool(value)
+
+        if expected_type == "int":
+            return int(float(value))
+
+        if expected_type == "float":
+            return float(value)
+
+        if expected_type == "enum":
+            return str(value).strip().upper()
+
+        if expected_type == "str":
+            return str(value)
+
+        return value
+
+    def _apply_settings_to_local_hardware(self, patch: dict[str, Any]) -> dict[str, Any]:
+        iface = self.conn.iface
+        if not iface or not iface.isConnected.is_set():
+            return {
+                "connected": False,
+                "applied": False,
+                "appliedSections": [],
+                "appliedFields": [],
+                "unsupportedFields": [],
+                "errors": ["Meshtastic interface is not connected"],
+            }
+
+        local_node = getattr(iface, "localNode", None)
+        if local_node is None:
+            return {
+                "connected": True,
+                "applied": False,
+                "appliedSections": [],
+                "appliedFields": [],
+                "unsupportedFields": [],
+                "errors": ["Local node is not ready"],
+            }
+
+        try:
+            from meshtastic.__main__ import setPref  # type: ignore
+        except Exception as exc:
+            return {
+                "connected": True,
+                "applied": False,
+                "appliedSections": [],
+                "appliedFields": [],
+                "unsupportedFields": [],
+                "errors": [f"Unable to import Meshtastic setPref helper: {exc}"],
+            }
+
+        applied_sections: set[str] = set()
+        applied_fields: list[str] = []
+        unsupported_fields: list[str] = []
+        errors: list[str] = []
+        sections_to_write: set[str] = set()
+
+        for section, raw_values in patch.items():
+            if section not in HARDWARE_APPLY_FIELD_MAP:
+                continue
+            if not isinstance(raw_values, dict):
+                continue
+
+            field_map = HARDWARE_APPLY_FIELD_MAP[section]
+            for ui_key, raw_value in raw_values.items():
+                mapping = field_map.get(ui_key)
+                if not mapping:
+                    unsupported_fields.append(f"{section}.{ui_key}")
+                    continue
+
+                if section == "position" and ui_key == "fixedPosition":
+                    unsupported_fields.append("position.fixedPosition (use location:set/location:clear)")
+                    continue
+
+                pref_name, expected_type = mapping
+                pref_path = f"{section}.{pref_name}"
+                try:
+                    coerced = self._coerce_hardware_value(raw_value, expected_type)
+                except Exception as exc:
+                    errors.append(f"{section}.{ui_key}: invalid value ({exc})")
+                    continue
+
+                try:
+                    ok = bool(setPref(local_node.localConfig, pref_path, coerced))
+                except SystemExit as exc:
+                    ok = False
+                    errors.append(f"{section}.{ui_key}: rejected by Meshtastic ({exc})")
+                except Exception as exc:
+                    ok = False
+                    errors.append(f"{section}.{ui_key}: {exc}")
+
+                if not ok:
+                    unsupported_fields.append(f"{section}.{ui_key}")
+                    continue
+
+                applied_sections.add(section)
+                applied_fields.append(f"{section}.{ui_key}")
+                sections_to_write.add(section)
+
+        if sections_to_write:
+            ordered_sections = sorted(sections_to_write)
+            use_transaction = len(ordered_sections) > 1
+            try:
+                if use_transaction:
+                    local_node.beginSettingsTransaction()
+                    time.sleep(0.1)
+
+                for section in ordered_sections:
+                    local_node.writeConfig(section)
+                    time.sleep(0.05)
+
+                if use_transaction:
+                    local_node.commitSettingsTransaction()
+            except Exception as exc:
+                errors.append(f"writeConfig failed: {exc}")
+
+        return {
+            "connected": True,
+            "applied": bool(applied_fields) and not errors,
+            "appliedSections": sorted(applied_sections),
+            "appliedFields": applied_fields,
+            "unsupportedFields": unsupported_fields,
+            "errors": errors,
+        }
+
+    async def apply_settings(self, patch: dict[str, Any]) -> dict[str, Any]:
+        merged = self._merge_settings(self.settings, patch)
+        self.settings = self._sanitize_settings(merged)
+        self._save_settings_to_disk()
+        hardware_apply = await asyncio.to_thread(self._apply_settings_to_local_hardware, patch)
+        payload = self.get_settings_payload()
+        payload["hardwareApply"] = hardware_apply
+        return payload
+
+    @staticmethod
+    def _is_valid_lat_lng(lat: Any, lng: Any) -> bool:
+        try:
+            lat_f = float(lat)
+            lng_f = float(lng)
+        except (TypeError, ValueError):
+            return False
+        if lat_f != lat_f or lng_f != lng_f:
+            return False
+        return -90.0 <= lat_f <= 90.0 and -180.0 <= lng_f <= 180.0
+
+    def _sanitize_node_locations(self, candidate: Any) -> dict[str, dict[str, Any]]:
+        if not isinstance(candidate, dict):
+            return {}
+
+        sanitized: dict[str, dict[str, Any]] = {}
+        for raw_node_id, raw_info in candidate.items():
+            node_id = self._normalize_node_id(raw_node_id)
+            if not node_id or not isinstance(raw_info, dict):
+                continue
+
+            lat = self._safe_float(raw_info.get("lat"))
+            lng = self._safe_float(raw_info.get("lng"))
+            if not self._is_valid_lat_lng(lat, lng):
+                continue
+
+            sanitized[node_id] = {
+                "nodeId": node_id,
+                "lat": float(lat),
+                "lng": float(lng),
+                "name": str(raw_info.get("name") or "").strip(),
+                "updatedAt": str(raw_info.get("updatedAt") or self._iso_from_timestamp(datetime.now(timezone.utc).timestamp())).strip(),
+            }
+
+        return sanitized
+
+    def _save_node_locations_to_disk(self) -> None:
+        try:
+            self.node_locations_file.write_text(
+                json.dumps(self.node_locations, ensure_ascii=True, indent=2),
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            logging.warning("Failed to persist fixed node locations to %s: %s", self.node_locations_file, exc)
+
+    def _load_node_locations_from_disk(self) -> None:
+        try:
+            if self.node_locations_file.exists():
+                loaded = json.loads(self.node_locations_file.read_text(encoding="utf-8"))
+                self.node_locations = self._sanitize_node_locations(loaded)
+            else:
+                self.node_locations = {}
+                self._save_node_locations_to_disk()
+        except Exception as exc:
+            logging.warning("Failed to load fixed node locations from %s: %s", self.node_locations_file, exc)
+            self.node_locations = {}
+
+    def get_node_locations_payload(self) -> dict[str, Any]:
+        local_node_id = self._local_node_id()
+        locations: dict[str, dict[str, Any]] = {}
+        if local_node_id and local_node_id in self.node_locations:
+            locations[local_node_id] = copy.deepcopy(self.node_locations[local_node_id])
+        return {
+            "type": "FIXED_LOCATIONS_DATA",
+            "locations": locations,
+            "savedAt": self._iso_from_timestamp(datetime.now(timezone.utc).timestamp()),
+            "source": str(self.node_locations_file),
+        }
+
+    async def set_node_fixed_location(self, node_id: Any, lat: Any, lng: Any, name: Any = None) -> dict[str, Any]:
+        local_node_id = self._local_node_id()
+        if not local_node_id:
+            raise ValueError("Local node is not ready")
+
+        normalized_id = self._normalize_node_id(node_id) if node_id is not None else local_node_id
+        if normalized_id and normalized_id not in {local_node_id, str(LOCAL_ADDR)}:
+            raise ValueError("Fixed position can only be set on the connected local node")
+
+        lat_f = self._safe_float(lat)
+        lng_f = self._safe_float(lng)
+        if not self._is_valid_lat_lng(lat_f, lng_f):
+            raise ValueError("Invalid lat/lng")
+
+        iface = self.conn.iface
+        if not iface or not iface.isConnected.is_set():
+            raise ValueError("Meshtastic interface is not connected")
+
+        try:
+            await asyncio.to_thread(iface.localNode.setFixedPosition, float(lat_f), float(lng_f), 0)
+        except Exception as exc:
+            logging.warning("Failed to apply fixed position to local node: %s", exc)
+            raise ValueError("Failed to apply fixed position to the local node") from exc
+
+        now_iso = self._iso_from_timestamp(datetime.now(timezone.utc).timestamp())
+        node_name = str(name or self._node_name_by_id(local_node_id) or "").strip()
+        self.node_locations = {
+            local_node_id: {
+                "nodeId": local_node_id,
+                "lat": float(lat_f),
+                "lng": float(lng_f),
+                "name": node_name,
+                "updatedAt": now_iso,
+            }
+        }
+        self._save_node_locations_to_disk()
+
+        if local_node_id in self.nodes:
+            self.nodes[local_node_id]["lat"] = float(lat_f)
+            self.nodes[local_node_id]["lng"] = float(lng_f)
+            self.nodes[local_node_id].setdefault("raw", {})
+            self.nodes[local_node_id]["raw"]["fixedLocation"] = True
+            self.nodes[local_node_id]["lastUpdated"] = now_iso
+
+        return {
+            "type": "FIXED_LOCATION_UPDATED",
+            "nodeId": local_node_id,
+            "location": copy.deepcopy(self.node_locations[local_node_id]),
+        }
+
+    async def clear_node_fixed_location(self, node_id: Any) -> dict[str, Any]:
+        local_node_id = self._local_node_id()
+        if not local_node_id:
+            raise ValueError("Local node is not ready")
+
+        normalized_id = self._normalize_node_id(node_id) if node_id is not None else local_node_id
+        if normalized_id and normalized_id not in {local_node_id, str(LOCAL_ADDR)}:
+            raise ValueError("Fixed position can only be cleared on the connected local node")
+
+        iface = self.conn.iface
+        if not iface or not iface.isConnected.is_set():
+            raise ValueError("Meshtastic interface is not connected")
+
+        try:
+            await asyncio.to_thread(iface.localNode.removeFixedPosition)
+        except Exception as exc:
+            logging.warning("Failed to remove fixed position from local node: %s", exc)
+            raise ValueError("Failed to clear the fixed position on the local node") from exc
+
+        removed = self.node_locations.pop(local_node_id, None)
+        self._save_node_locations_to_disk()
+
+        if local_node_id in self.nodes:
+            self.nodes[local_node_id].setdefault("raw", {})
+            self.nodes[local_node_id]["raw"]["fixedLocation"] = False
+
+        return {
+            "type": "FIXED_LOCATION_CLEARED",
+            "nodeId": local_node_id,
+            "removed": bool(removed),
+        }
+
     def _parse_hwid_pair(self, hwid_text: str) -> Optional[tuple[int, int]]:
         match = re.search(r"VID:PID=([0-9A-Fa-f]{4}):([0-9A-Fa-f]{4})", hwid_text)
         if not match:
@@ -272,19 +812,29 @@ class MeshtasticGateway:
             return f"!{text}"
         return text
 
-    @classmethod
-    def _is_excluded_node_id(cls, value: Any) -> bool:
-        normalized = cls._normalize_node_id(value)
+    def _dynamic_excluded_suffixes(self) -> set[str]:
+        text = str((self.settings.get("module") or {}).get("nodeBlackListSuffixes") or "")
+        dynamic = {
+            token.strip().lower().lstrip("!")
+            for token in text.split(",")
+            if token.strip()
+        }
+        return {item for item in dynamic if re.fullmatch(r"[0-9a-f]{4}", item)}
+
+    def _is_excluded_node_id(self, value: Any) -> bool:
+        normalized = self._normalize_node_id(value)
         if not normalized:
             return False
 
         if normalized in EXCLUDED_NODE_IDS:
             return True
 
-        if normalized.startswith("!") and len(normalized) >= 5:
-            return normalized[-4:] in EXCLUDED_NODE_SUFFIXES
+        suffixes = EXCLUDED_NODE_SUFFIXES.union(self._dynamic_excluded_suffixes())
 
-        return normalized in EXCLUDED_NODE_SUFFIXES
+        if normalized.startswith("!") and len(normalized) >= 5:
+            return normalized[-4:] in suffixes
+
+        return normalized in suffixes
 
     def _normalize_node(self, node: dict[str, Any]) -> Optional[dict[str, Any]]:
         node_num = node.get("num")
@@ -317,6 +867,14 @@ class MeshtasticGateway:
             if lng_i is not None:
                 lng = lng_i * 1e-7
 
+        fixed_location = self.node_locations.get(str(node_id))
+        if fixed_location:
+            fixed_lat = self._safe_float(fixed_location.get("lat"))
+            fixed_lng = self._safe_float(fixed_location.get("lng"))
+            if self._is_valid_lat_lng(fixed_lat, fixed_lng):
+                lat = float(fixed_lat)
+                lng = float(fixed_lng)
+
         metrics = node.get("deviceMetrics") or {}
         battery = self._safe_float(metrics.get("batteryLevel"))
 
@@ -335,16 +893,18 @@ class MeshtasticGateway:
             status = "online"
             last_updated_iso = self._iso_from_timestamp(last_heard if last_heard is not None else now)
         else:
-            # For alert fan-out, keep nodes sendable regardless stale telemetry.
-            # Remote node becomes offline only when delivery timeout marks it missed.
-            previous_status = str(previous_node.get("status") or "").lower()
-            status = "offline" if previous_status == "offline" else "online"
-            if activity_ts is not None:
-                last_updated_iso = self._iso_from_timestamp(activity_ts)
-            elif last_heard is not None:
-                last_updated_iso = self._iso_from_timestamp(last_heard)
+            source_ts = activity_ts if activity_ts is not None else last_heard
+            previous_ts = self._timestamp_from_iso(previous_node.get("lastUpdated"))
+            display_ts = source_ts if source_ts is not None else previous_ts
+
+            if source_ts is None:
+                status = "offline"
             else:
-                last_updated_iso = str(previous_node.get("lastUpdated") or self._iso_from_timestamp(now))
+                status = "online" if (now - source_ts) <= ONLINE_WINDOW_SECONDS else "offline"
+
+            if display_ts is None:
+                display_ts = now
+            last_updated_iso = self._iso_from_timestamp(display_ts)
 
         return {
             "id": node_id,
@@ -361,6 +921,8 @@ class MeshtasticGateway:
                 "shortName": user.get("shortName"),
                 "hwModel": user.get("hwModel"),
                 "hasLastHeard": last_heard is not None,
+                "lastHeard": last_heard,
+                "fixedLocation": bool(fixed_location),
             },
         }
 
@@ -418,6 +980,32 @@ class MeshtasticGateway:
                 current["lastUpdated"] = old_node.get("lastUpdated")
 
         logging.info("Final node count: %s", len(updated))
+
+        local_node_id = self._local_node_id()
+        if local_node_id and local_node_id not in updated:
+            location = self.node_locations.get(local_node_id)
+            lat = self._safe_float((location or {}).get("lat"))
+            lng = self._safe_float((location or {}).get("lng"))
+            if self._is_valid_lat_lng(lat, lng):
+                updated[local_node_id] = {
+                    "id": local_node_id,
+                    "name": str((location or {}).get("name") or local_node_id),
+                    "lat": float(lat),
+                    "lng": float(lng),
+                    "status": "offline",
+                    "type": "gateway",
+                    "battery": None,
+                    "rssi": None,
+                    "lastUpdated": str((location or {}).get("updatedAt") or self._iso_from_timestamp(datetime.now(timezone.utc).timestamp())),
+                    "raw": {
+                        "num": None,
+                        "shortName": None,
+                        "hwModel": None,
+                        "hasLastHeard": False,
+                        "fixedLocation": True,
+                    },
+                }
+
         self.nodes = updated
 
     @staticmethod
@@ -483,6 +1071,30 @@ class MeshtasticGateway:
                 return payload.strip()
 
         return None
+
+    def _recompute_node_statuses(self, now_ts: Optional[float] = None) -> bool:
+        now = float(now_ts if now_ts is not None else datetime.now(timezone.utc).timestamp())
+        changed = False
+
+        for node_id, node in self.nodes.items():
+            node_type = str(node.get("type") or "").lower()
+            if node_type == "gateway":
+                desired_status = "online" if (self.conn.iface and self.conn.iface.isConnected.is_set()) else "offline"
+            else:
+                activity_ts = self.node_activity.get(node_id)
+                if activity_ts is None:
+                    activity_ts = self._safe_float((node.get("raw") or {}).get("lastHeard"))
+                if activity_ts is None:
+                    desired_status = "offline"
+                else:
+                    desired_status = "online" if (now - activity_ts) <= ONLINE_WINDOW_SECONDS else "offline"
+
+            current_status = str(node.get("status") or "offline").lower()
+            if desired_status != current_status:
+                node["status"] = desired_status
+                changed = True
+
+        return changed
 
     async def broadcast_incoming_message(self, payload: dict[str, Any]) -> None:
         await self.broadcast_json({"type": "mesh:receive", **payload})
@@ -957,6 +1569,12 @@ class MeshtasticGateway:
             return f"!{node_num:08x}"
         return None
 
+    def _local_node_id(self) -> Optional[str]:
+        iface = self.conn.iface
+        if iface and iface.myInfo:
+            return self._node_id_from_num(iface.myInfo.my_node_num)
+        return None
+
     def _node_name_by_id(self, node_id: Any) -> str:
         key = str(node_id or "").strip()
         if not key:
@@ -1217,6 +1835,97 @@ class MeshtasticGateway:
 
         if msg_type == "sync":
             await self.send_json(ws, {"type": "nodes:update", "nodes": list(self.nodes.values())})
+            await self.send_json(ws, self.get_settings_payload())
+            await self.send_json(ws, self.get_node_locations_payload())
+            return
+
+        if msg_type in {"location:get", "LOCATION_GET"}:
+            await self.send_json(ws, self.get_node_locations_payload())
+            return
+
+        if msg_type in {"location:set", "LOCATION_SET"}:
+            node_id = data.get("nodeId")
+            lat = data.get("lat")
+            lng = data.get("lng")
+            name = data.get("name")
+            try:
+                updated = await self.set_node_fixed_location(node_id, lat, lng, name)
+            except ValueError as exc:
+                await self.send_json(
+                    ws,
+                    {
+                        "type": "STATUS",
+                        "status": "error",
+                        "message": str(exc),
+                    },
+                )
+                return
+
+            await self.send_json(ws, updated)
+            await self.broadcast_json(updated)
+            await self.broadcast_json(self.get_node_locations_payload())
+            await self.broadcast_nodes()
+            return
+
+        if msg_type in {"location:clear", "LOCATION_CLEAR"}:
+            node_id = data.get("nodeId")
+            try:
+                cleared = await self.clear_node_fixed_location(node_id)
+            except ValueError as exc:
+                await self.send_json(
+                    ws,
+                    {
+                        "type": "STATUS",
+                        "status": "error",
+                        "message": str(exc),
+                    },
+                )
+                return
+
+            await self.send_json(ws, cleared)
+            await self.broadcast_json(cleared)
+            await self.broadcast_json(self.get_node_locations_payload())
+            await self.broadcast_nodes()
+            return
+
+        if msg_type in {"settings:get", "SETTINGS_GET"}:
+            await self.send_json(ws, self.get_settings_payload())
+            return
+
+        if msg_type in {"settings:set", "SETTINGS_SET"}:
+            incoming_settings = data.get("settings")
+            if not isinstance(incoming_settings, dict):
+                await self.send_json(
+                    ws,
+                    {
+                        "type": "STATUS",
+                        "status": "error",
+                        "message": "settings:set requires a 'settings' object",
+                    },
+                )
+                return
+
+            updated_payload = await self.apply_settings(incoming_settings)
+            await self.send_json(ws, updated_payload)
+            await self.broadcast_json(
+                {
+                    "type": "SETTINGS_UPDATED",
+                    "settings": updated_payload.get("settings"),
+                    "hardwareApply": updated_payload.get("hardwareApply"),
+                }
+            )
+            return
+
+        if msg_type in {"settings:reset", "SETTINGS_RESET"}:
+            updated_payload = await self.apply_settings(self._copy_settings(DEFAULT_SETTINGS))
+            await self.send_json(ws, updated_payload)
+            await self.broadcast_json(
+                {
+                    "type": "SETTINGS_UPDATED",
+                    "settings": updated_payload.get("settings"),
+                    "hardwareApply": updated_payload.get("hardwareApply"),
+                }
+            )
             return
 
         if msg_type == "command":
@@ -1236,6 +1945,7 @@ class MeshtasticGateway:
         while True:
             await self.disconnect_if_missing()
             connected = bool(self.conn.iface and self.conn.iface.isConnected.is_set())
+            status_changed = self._recompute_node_statuses()
             status = "connected" if connected else "scanning"
             await self.broadcast_json(
                 {
@@ -1255,6 +1965,8 @@ class MeshtasticGateway:
 
                     if new_count != old_count:
                         logging.info(f"Node count changed: {old_count} -> {new_count}. Broadcasting update...")
+                        await self.broadcast_nodes()
+                    elif status_changed:
                         await self.broadcast_nodes()
 
                     now_ts = datetime.now(timezone.utc).timestamp()
@@ -1290,8 +2002,12 @@ class MeshtasticGateway:
 
                     if timed_out_ids:
                         await self.broadcast_nodes()
+                    elif status_changed:
+                        await self.broadcast_nodes()
                 except Exception as e:
                     logging.warning(f"Error during periodic node refresh: {e}")
+            elif status_changed:
+                await self.broadcast_nodes()
             
             await asyncio.sleep(2)
 
@@ -1314,6 +2030,8 @@ class MeshtasticGateway:
         self.clients.add(ws)
         try:
             await self.send_port_list(ws)
+            await self.send_json(ws, self.get_settings_payload())
+            await self.send_json(ws, self.get_node_locations_payload())
             await self.send_json(
                 ws,
                 {
