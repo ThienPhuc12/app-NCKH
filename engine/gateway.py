@@ -1112,6 +1112,7 @@ class MeshtasticGateway:
         destination: Any,
         text: str,
         retry_count: int = 0,
+        channel_index: int = 0,
     ) -> None:
         if not isinstance(packet_id, int):
             return
@@ -1121,6 +1122,7 @@ class MeshtasticGateway:
             "destination": destination,
             "destinationName": self._node_name_by_id(destination),
             "text": text,
+            "channelIndex": channel_index,
             "createdAt": datetime.now(timezone.utc).timestamp(),
             "status": "pending",
             "retryCount": int(max(0, retry_count)),
@@ -1153,6 +1155,8 @@ class MeshtasticGateway:
                     text,
                     destination,
                     True,
+                                        None,
+                                        int(pending.get("channelIndex", 0)),
                     True,
                 )
             except Exception:
@@ -1644,9 +1648,31 @@ class MeshtasticGateway:
 
     async def handle_command(self, ws: WebSocketServerProtocol, message: dict[str, Any]) -> None:
         request_id = message.get("requestId")
-        text = (((message.get("payload") or {}).get("text")) or message.get("command") or "BAODONG").strip()
-        target_id = (message.get("payload") or {}).get("targetId")
-        destination = self._resolve_destination(target_id)
+        payload = message.get("payload") or {}
+        text = (payload.get("text") or message.get("command") or "BAODONG").strip()
+        target_id = payload.get("targetId")
+        send_mode = str(payload.get("sendMode", "dm") or "dm").strip().lower()
+
+        # Determine channel index for message transmission
+        if send_mode == "channel":
+            try:
+                channel_index = int(target_id)
+                if not (0 <= channel_index <= 7):
+                    channel_index = 0
+            except (ValueError, TypeError):
+                channel_index = 0
+        else:
+            channel_index = 0
+
+        # For channel mode, always broadcast to all nodes (they will handle channel filtering)
+        if send_mode == "channel":
+            destination = BROADCAST_ADDR
+            logging.info(
+                "Channel mode detected: sending to BROADCAST_ADDR on channel %s",
+                channel_index,
+            )
+        else:
+            destination = self._resolve_destination(target_id)
 
         if destination not in {BROADCAST_ADDR, LOCAL_ADDR} and self._is_excluded_node_id(destination):
             await self.send_json(
@@ -1675,11 +1701,18 @@ class MeshtasticGateway:
                 return
 
             destinations: list[Any]
-            if destination == BROADCAST_ADDR:
+            if send_mode == "channel":
+                destinations = [BROADCAST_ADDR]
+                logging.info(
+                    "Channel broadcast request %s using channel %s",
+                    request_id,
+                    channel_index,
+                )
+            elif destination == BROADCAST_ADDR:
                 fanout_targets = self._broadcast_targets()
                 destinations = fanout_targets if fanout_targets else [destination]
                 logging.info(
-                    "Fanout request %s resolved %s target(s): %s",
+                    "Fanout request %s (DM fanout) resolved %s target(s): %s",
                     request_id,
                     len(destinations),
                     [str(item) for item in destinations],
@@ -1689,20 +1722,25 @@ class MeshtasticGateway:
 
             results: list[dict[str, Any]] = []
             for index, dst in enumerate(destinations):
-                if destination == BROADCAST_ADDR and index > 0 and FANOUT_SEND_GAP_SECONDS > 0:
+                if send_mode != "channel" and destination == BROADCAST_ADDR and index > 0 and FANOUT_SEND_GAP_SECONDS > 0:
                     await asyncio.sleep(FANOUT_SEND_GAP_SECONDS)
 
                 sent_packet = None
                 send_error = None
-                attempts = 1 + (FANOUT_RETRY_COUNT if destination == BROADCAST_ADDR else 0)
+                should_retry = send_mode != "channel" and destination == BROADCAST_ADDR
+                attempts = 1 + (FANOUT_RETRY_COUNT if should_retry else 0)
                 for attempt in range(max(1, attempts)):
                     try:
+                        want_ack = not (send_mode == "channel" and dst == BROADCAST_ADDR)
+                        want_response = want_ack
                         sent_packet = await asyncio.to_thread(
                             iface.sendText,
                             text,
                             dst,
-                            True,
-                            True,
+                            want_ack,
+                            want_response,
+                            None,
+                            channel_index,
                         )
                         send_error = None
                         break
@@ -1723,7 +1761,8 @@ class MeshtasticGateway:
                     continue
 
                 packet_id = getattr(sent_packet, "id", None)
-                self._register_pending_command(packet_id, request_id, dst, text)
+                if not (send_mode == "channel" and dst == BROADCAST_ADDR):
+                    self._register_pending_command(packet_id, request_id, dst, text, channel_index=channel_index)
                 results.append(
                     {
                         "ok": True,
@@ -1757,7 +1796,10 @@ class MeshtasticGateway:
                 "destinationName": result.get("destinationName"),
                 "message": f"Sent '{text}' to {result.get('destination')}",
                 "ackSource": "gateway",
+                "sendMode": send_mode,
             }
+            if send_mode == "channel":
+                ack_payload["channelNum"] = target_id
             await self.send_json(ws, ack_payload)
             await self.broadcast_json({"type": "command:ack", **ack_payload})
 
@@ -1770,6 +1812,8 @@ class MeshtasticGateway:
                 "sent": len(ok_results),
                 "failed": len(results) - len(ok_results),
                 "fanout": destination == BROADCAST_ADDR,
+                "sendMode": send_mode,
+                "channelNum": target_id if send_mode == "channel" else None,
                 "destinationsAttempted": [
                     {
                         "id": str(dst),

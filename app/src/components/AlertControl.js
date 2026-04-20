@@ -1,8 +1,51 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import './AlertControl.css';
 
-const ACK_TIMEOUT_MS = 10000;
+const ACK_TIMEOUT_MS = 22000;
 const EXCLUDED_NODE_SUFFIXES = new Set(['d4d4']);
+
+function requestKeyCandidates(value) {
+  const text = String(value ?? '').trim().toLowerCase();
+  if (!text) {
+    return [];
+  }
+
+  const keys = [];
+  const pushUnique = (candidate) => {
+    if (!keys.includes(candidate)) {
+      keys.push(candidate);
+    }
+  };
+
+  pushUnique(text);
+  if (text.startsWith('0x')) {
+    const parsed = Number.parseInt(text, 16);
+    if (Number.isFinite(parsed)) {
+      pushUnique(String(parsed));
+      pushUnique(parsed.toString(16));
+      pushUnique(parsed.toString(16).padStart(8, '0'));
+    }
+    return keys;
+  }
+
+  if (/^[0-9]+$/.test(text)) {
+    const parsed = Number.parseInt(text, 10);
+    if (Number.isFinite(parsed)) {
+      pushUnique(parsed.toString(16));
+      pushUnique(parsed.toString(16).padStart(8, '0'));
+    }
+    return keys;
+  }
+
+  if (/^[0-9a-f]{8}$/.test(text)) {
+    const parsed = Number.parseInt(text, 16);
+    if (Number.isFinite(parsed)) {
+      pushUnique(String(parsed));
+    }
+  }
+
+  return keys;
+}
 
 function normalizeNodeId(value) {
   const text = String(value || '').trim().toLowerCase();
@@ -96,6 +139,8 @@ function sortNodes(nodes) {
 }
 
 function AlertControl({ gatewayUrl }) {
+  const [sendMode, setSendMode] = useState('dm');
+  const [selectedChannel, setSelectedChannel] = useState(0);
   const [targetId, setTargetId] = useState('^all');
   const [messageText, setMessageText] = useState('BAODONG');
   const [status, setStatus] = useState('Sẵn sàng');
@@ -139,11 +184,15 @@ function AlertControl({ gatewayUrl }) {
   );
 
   const selectedTargetLabel = useMemo(() => {
+    if (sendMode === 'channel') {
+      const channelNames = ['Primary', 'Secondary', 'Tertiary'];
+      return `Chế độ Channel: ${channelNames[selectedChannel] || 'Unknown'}`;
+    }
     if (targetId === '^all') {
       return 'Tất cả node (bao gồm cả node offline)';
     }
     return selectedNode ? `${selectedNode.name} (${selectedNode.id})` : targetId;
-  }, [selectedNode, targetId]);
+  }, [selectedNode, targetId, sendMode, selectedChannel]);
 
   useEffect(() => {
     availableNodesRef.current = availableNodes;
@@ -402,10 +451,13 @@ function AlertControl({ gatewayUrl }) {
   }, [gatewayUrl]);
 
   useEffect(() => {
-    if (targetId !== '^all' && selectedNode) {
+    if (sendMode === 'channel') {
+      const channelNames = ['Primary', 'Secondary', 'Tertiary'];
+      setStatus(`Đang chọn channel: ${channelNames[selectedChannel] || 'Unknown'}`);
+    } else if (targetId !== '^all' && selectedNode) {
       setStatus(`Đang chọn node: ${selectedNode.name} (${selectedNode.id})`);
     }
-  }, [selectedNode, targetId]);
+  }, [selectedNode, targetId, sendMode, selectedChannel]);
 
   useEffect(() => {
     if (targetId === '^all') {
@@ -428,7 +480,7 @@ function AlertControl({ gatewayUrl }) {
       return;
     }
 
-    if (!targetId.trim()) {
+    if (sendMode === 'dm' && !targetId.trim()) {
       setStatus('Hãy chọn node đích hoặc broadcast');
       return;
     }
@@ -442,6 +494,9 @@ function AlertControl({ gatewayUrl }) {
     setStatus('Đang kết nối gateway...');
     setLastResponse('Đang gửi lệnh...');
 
+    const finalTargetId = sendMode === 'channel' ? selectedChannel : targetId;
+    const modeLabel = sendMode === 'channel' ? `Channel ${selectedChannel}` : `Node ${targetId}`;
+
     const payload = {
       version: '1.0',
       type: 'command',
@@ -450,13 +505,14 @@ function AlertControl({ gatewayUrl }) {
       command: 'BAODONG',
       payload: {
         text: messageText || 'BAODONG',
-        targetId,
+        targetId: finalTargetId,
         source: 'alert-control-ui',
+        sendMode,
       },
     };
 
     socket.send(JSON.stringify(payload));
-    setStatus('Đã đẩy lệnh lên gateway, đang chờ ACK...');
+    setStatus(`Đã đẩy lệnh lên gateway (${modeLabel}), đang chờ ACK...`);
 
     if (sendTimeoutRef.current) {
       clearTimeout(sendTimeoutRef.current);
@@ -486,66 +542,122 @@ function AlertControl({ gatewayUrl }) {
         </button>
       </div>
 
-      <div className="node-picker-panel">
-        <div className="node-picker-header">
-          <div>
-            <strong>Danh sách node đã kết nối (không gồm gateway)</strong>
-            <p>Chọn node để gửi DM, hoặc chọn tất cả để broadcast.</p>
-          </div>
+      <div className="mode-selector-panel">
+        <strong>Chế độ gửi</strong>
+        <div className="mode-buttons">
           <button
             type="button"
-            className={`node-chip broadcast ${targetId === '^all' ? 'active' : ''}`}
-            onClick={() => handleSelectNode('^all')}
+            className={`mode-btn ${sendMode === 'dm' ? 'active' : ''}`}
+            onClick={() => setSendMode('dm')}
           >
-            Tất cả
+            📨 Gửi DM (Node riêng)
+          </button>
+          <button
+            type="button"
+            className={`mode-btn ${sendMode === 'channel' ? 'active' : ''}`}
+            onClick={() => setSendMode('channel')}
+          >
+            📢 Gửi Channel
           </button>
         </div>
+      </div>
 
-        <div className="node-picker-grid">
-          {onlineNodes.map((node) => (
+      {sendMode === 'dm' && (
+        <div className="node-picker-panel">
+          <div className="node-picker-header">
+            <div>
+              <strong>Danh sách node đã kết nối (không gồm gateway)</strong>
+              <p>Chọn node để gửi DM, hoặc chọn tất cả để broadcast.</p>
+            </div>
             <button
-              key={node.id}
               type="button"
-              className={`node-chip ${targetId === node.id ? 'active' : ''}`}
-              onClick={() => handleSelectNode(node.id)}
+              className={`node-chip broadcast ${targetId === '^all' ? 'active' : ''}`}
+              onClick={() => handleSelectNode('^all')}
             >
-              <span className="node-chip-name">{node.name}</span>
-              <span className="node-chip-id">{node.id}</span>
+              Tất cả
             </button>
-          ))}
-          {offlineNodes.map((node) => (
-            <button
-              key={node.id}
-              type="button"
-              className={`node-chip offline ${targetId === node.id ? 'active' : ''}`}
-              onClick={() => handleSelectNode(node.id)}
-            >
-              <span className="node-chip-name">{node.name}</span>
-              <span className="node-chip-id">{node.id}</span>
-            </button>
-          ))}
+          </div>
+
+          <div className="node-picker-grid">
+            {onlineNodes.map((node) => (
+              <button
+                key={node.id}
+                type="button"
+                className={`node-chip ${targetId === node.id ? 'active' : ''}`}
+                onClick={() => handleSelectNode(node.id)}
+              >
+                <span className="node-chip-name">{node.name}</span>
+                <span className="node-chip-id">{node.id}</span>
+              </button>
+            ))}
+            {offlineNodes.map((node) => (
+              <button
+                key={node.id}
+                type="button"
+                className={`node-chip offline ${targetId === node.id ? 'active' : ''}`}
+                onClick={() => handleSelectNode(node.id)}
+              >
+                <span className="node-chip-name">{node.name}</span>
+                <span className="node-chip-id">{node.id}</span>
+              </button>
+            ))}
+          </div>
         </div>
-      </div>
+      )}
 
-      <div className="field-group">
-        <label htmlFor="targetId">Node đích</label>
-        <input
-          id="targetId"
-          value={targetId}
-          onChange={(event) => setTargetId(event.target.value)}
-          placeholder="Ví dụ: ^all hoặc !e3f9a120"
-        />
-        <small>Chọn node trong danh sách bên trên hoặc nhập ID khác nếu cần.</small>
-      </div>
+      {sendMode === 'channel' && (
+        <div className="channel-picker-panel">
+          <strong>Chọn channel</strong>
+          <div className="channel-buttons">
+            <button
+              type="button"
+              className={`channel-btn ${selectedChannel === 0 ? 'active' : ''}`}
+              onClick={() => setSelectedChannel(0)}
+            >
+              Primary
+            </button>
+            <button
+              type="button"
+              className={`channel-btn ${selectedChannel === 1 ? 'active' : ''}`}
+              onClick={() => setSelectedChannel(1)}
+            >
+              Secondary
+            </button>
+            <button
+              type="button"
+              className={`channel-btn ${selectedChannel === 2 ? 'active' : ''}`}
+              onClick={() => setSelectedChannel(2)}
+            >
+              Tertiary
+            </button>
+          </div>
+        </div>
+      )}
+
+      {sendMode === 'dm' && (
+        <div className="field-group">
+          <label htmlFor="targetId">Node đích</label>
+          <input
+            id="targetId"
+            value={targetId}
+            onChange={(event) => setTargetId(event.target.value)}
+            placeholder="Ví dụ: ^all hoặc !e3f9a120"
+          />
+          <small>Chọn node trong danh sách bên trên hoặc nhập ID khác nếu cần.</small>
+        </div>
+      )}
 
       <div className="field-group">
         <label htmlFor="messageText">Nội dung cảnh báo</label>
-        <input
+        <select
           id="messageText"
           value={messageText}
           onChange={(event) => setMessageText(event.target.value)}
-          placeholder="Ví dụ: BAODONG"
-        />
+        >
+          <option value="BAODONG">BAODONG</option>
+          <option value="DUNGBAODONG">DUNGBAODONG</option>
+          <option value="TEST">TEST</option>
+        </select>
       </div>
 
       <button type="button" className="send-alert-btn" onClick={handleSend}>
